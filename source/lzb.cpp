@@ -41,8 +41,17 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		unsigned char byte_data = pSource[ processedBytes++ ];
 		candidate_data.push_back(byte_data);
 
+		// Basic Flow Idea Here
 		// If there's a match, then add to the candidate data, and see if
 		// there's a bigger match (use previous result to speed up search)
+		// else
+		// if there's a previous match, and it's large enough, emit that
+		// else emit what we have as a literal
+
+
+
+
+
 		// (KMP is probably the last planned optmization here)
 
 
