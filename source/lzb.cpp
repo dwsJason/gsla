@@ -41,9 +41,13 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		unsigned char byte_data = pSource[ processedBytes++ ];
 		candidate_data.push_back(byte_data);
 
+		// If there's a match, then add to the candidate data, and see if
+		// there's a bigger match (use previous result to speed up search)
+		// (KMP is probably the last planned optmization here)
+
+
 		// The dictionary only contains bytes that have been emitted, so we
 		// can't add this byte until we've emitted it?
-
 		if (DictionaryMatch(candidate_data, bytesInDictionary) < 0)
 		{
 			// Was there a dictionary match
@@ -279,10 +283,10 @@ static int EmitReference(unsigned char *pDest, int dictionaryOffset, std::vector
 
 //------------------------------------------------------------------------------
 //
-// Std C memcpy seems to be stopping this from happening
-// probably for my protection
+// Std C memcpy seems to be stopping the copy from happening, when I overlap
+// the buffer to get a pattern run copy (overlapped buffers)
 //
-void mymemcpy(u8* pDest, u8* pSrc, int length)
+static void my_memcpy(u8* pDest, u8* pSrc, int length)
 {
 	while (length-- > 0)
 	{
@@ -312,7 +316,7 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 			u16 offset  = *pSource++;
 			    offset |= ((u16)(*pSource++))<<8;
 
-			mymemcpy(&pDest[ decompressedBytes ], &pDest[ offset ], opcode);
+			my_memcpy(&pDest[ decompressedBytes ], &pDest[ offset ], opcode);
 			decompressedBytes += opcode;
 		}
 		else
