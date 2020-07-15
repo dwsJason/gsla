@@ -4,42 +4,52 @@
 #include "lzb.h"
 
 #include <stdio.h>
-#include <vector>
+#include <string.h>
 
 #include "bctypes.h"
 
-#define DICTIONARY_SIZE (32 * 1024)
+#define MAX_DICTIONARY_SIZE (32 * 1024)
 //
 // Yes This is a 32K Buffer, of bytes, with no structure to it
 //
-static unsigned char Dictionary[ DICTIONARY_SIZE ];
+static unsigned char *pDictionary = nullptr;
 
-static int AddDictionary(const std::vector<unsigned char>&data, int dictionarySize);
-static int EmitLiteral(unsigned char *pDest, std::vector<unsigned char>& data);
-static int ConcatLiteral(unsigned char *pDest, std::vector<unsigned char>& data);
-static int EmitReference(unsigned char *pDest, int dictionaryOffset, std::vector<unsigned char>& data);
-static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionarySize);
+struct DataString {
+	int size;
+	unsigned char *pData;
+};
+
+static int AddDictionary(const DataString& data, int dictionarySize);
+static int EmitLiteral(unsigned char *pDest, DataString& data);
+static int ConcatLiteral(unsigned char *pDest, DataString& data);
+static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString& data);
+static int DictionaryMatch(const DataString& data, int dictionarySize);
+
 
 int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 {
 	printf("LZB_Compress %d bytes\n", sourceSize);
 
-	// anything less than 3 bytes, is going to be a literal match
+	// Initialize Dictionary
+	int bytesInDictionary = 0;		// eventually add the ability to start with the dictionary filled
+	pDictionary = pSource;
 
 	int processedBytes = 0;
-	int bytesInDictionary = 0;
 	int bytesEmitted = 0;
 
 	// dumb last emit is a literal stuff
 	bool bLastEmitIsLiteral = false;
 	int  lastEmittedLiteralOffset = 0;
 
-	std::vector<unsigned char> candidate_data;
+	DataString candidate_data;
+	candidate_data.pData = pSource;
+	candidate_data.size = 0;
 
 	while (processedBytes < sourceSize)
 	{
-		unsigned char byte_data = pSource[ processedBytes++ ];
-		candidate_data.push_back(byte_data);
+		// Add a byte to the candidate_data, also tally number of processed
+		processedBytes++;
+		candidate_data.size++;  
 
 		// Basic Flow Idea Here
 		// If there's a match, then add to the candidate data, and see if
@@ -47,9 +57,6 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		// else
 		// if there's a previous match, and it's large enough, emit that
 		// else emit what we have as a literal
-
-
-
 
 
 		// (KMP is probably the last planned optmization here)
@@ -60,21 +67,23 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		if (DictionaryMatch(candidate_data, bytesInDictionary) < 0)
 		{
 			// Was there a dictionary match
-			std::vector<unsigned char> prev_data = candidate_data;
-			prev_data.pop_back();
 
-			int MatchOffset = DictionaryMatch(prev_data, bytesInDictionary);
+			// Previous Data, we can't get here with candidate_data.size == 0
+			// this is an opportunity to use an assert
+			candidate_data.size--;
 
-			if ((MatchOffset >= 0) && prev_data.size() > 3)
+			int MatchOffset = DictionaryMatch(candidate_data, bytesInDictionary);
+
+			if ((MatchOffset >= 0) && candidate_data.size > 3)
 			{
-				bytesInDictionary = AddDictionary(prev_data, bytesInDictionary);
-				bytesEmitted += EmitReference(pDest + bytesEmitted, MatchOffset, prev_data);
-				candidate_data[0] = candidate_data[ candidate_data.size() - 1 ];
-				candidate_data.resize(1);
+				processedBytes--;
+				bytesInDictionary = AddDictionary(candidate_data, bytesInDictionary);
+				bytesEmitted += EmitReference(pDest + bytesEmitted, MatchOffset, candidate_data);
 				bLastEmitIsLiteral = false;
 			}
 			else
 			{
+				candidate_data.size++;
 				// Add Dictionary
 				bytesInDictionary = AddDictionary(candidate_data, bytesInDictionary);
 
@@ -94,12 +103,12 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		}
 	}
 
-	if (candidate_data.size() > 0)
+	if (candidate_data.size > 0)
 	{
 
 		int MatchOffset = DictionaryMatch(candidate_data, bytesInDictionary);
 
-		if ((MatchOffset >=0) && candidate_data.size() > 2)
+		if ((MatchOffset >=0) && candidate_data.size > 2)
 		{
 			bytesInDictionary = AddDictionary(candidate_data, bytesInDictionary);
 			bytesEmitted += EmitReference(pDest + bytesEmitted, MatchOffset, candidate_data);
@@ -127,14 +136,15 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 
 //------------------------------------------------------------------------------
 // Return new dictionarySize
-static int AddDictionary(const std::vector<unsigned char>&data, int dictionarySize)
+static int AddDictionary(const DataString& data, int dictionarySize)
 {
-	int dataIndex = 0;
+	//int dataIndex = 0;
+	//while ((dictionarySize < MAX_DICTIONARY_SIZE) && (dataIndex < data.size))
+	//{
+	//	pDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
+	//}
 
-	while ((dictionarySize < DICTIONARY_SIZE) && (dataIndex < data.size()))
-	{
-		Dictionary[ dictionarySize++ ] = data[ dataIndex++ ];
-	}
+	dictionarySize += data.size;
 
 	return dictionarySize;
 }
@@ -145,11 +155,11 @@ static int AddDictionary(const std::vector<unsigned char>&data, int dictionarySi
 //
 // -1 means, no match
 //
-static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionarySize)
+static int DictionaryMatch(const DataString& data, int dictionarySize)
 {
 	if( (0 == dictionarySize ) ||
-		(0 == data.size()) ||
-		(data.size() > 16384) ) // 16384 is largest string copy we can encode
+		(0 == data.size) ||
+		(data.size > 16384) ) // 16384 is largest string copy we can encode
 	{
 		return -1;
 	}
@@ -168,9 +178,9 @@ static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionar
 			bool bMatch = true;
 			int pattern_start = dictionarySize - pattern_size;
 
-			for (int dataIndex = 0; dataIndex < data.size(); ++dataIndex)
+			for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
 			{
-				if (data[ dataIndex ] == Dictionary[ pattern_start + (dataIndex % pattern_size) ])
+				if (data.pData[ dataIndex ] == pDictionary[ pattern_start + (dataIndex % pattern_size) ])
 					continue;
 
 				bMatch = false;
@@ -185,7 +195,7 @@ static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionar
 		}
 	}
 
-	if (dictionarySize < data.size())
+	if (dictionarySize < data.size)
 	{
 		return -1;
 	}
@@ -195,12 +205,12 @@ static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionar
 	int result = -1;
 
 	// Check the dictionary for a match, brute force
-	for (int idx = 0; idx <= (dictionarySize-data.size()); ++idx)
+	for (int idx = 0; idx <= (dictionarySize-data.size); ++idx)
 	{
 		bool bMatch = true;
-		for (int dataIdx = 0; dataIdx < data.size(); ++dataIdx)
+		for (int dataIdx = 0; dataIdx < data.size; ++dataIdx)
 		{
-			if (data[ dataIdx ] == Dictionary[ idx + dataIdx ])
+			if (data.pData[ dataIdx ] == pDictionary[ idx + dataIdx ])
 				continue;
 
 			bMatch = false;
@@ -221,10 +231,10 @@ static int DictionaryMatch(const std::vector<unsigned char>& data, int dictionar
 //
 // Emit a literal, that appends itself to an existing literal
 //
-static int ConcatLiteral(unsigned char *pDest, std::vector<unsigned char>& data)
+static int ConcatLiteral(unsigned char *pDest, DataString& data)
 {
 	// Return Size
-	int outSize = (int)data.size();
+	int outSize = (int)data.size;
 
 	int opCode  = pDest[0];
 	    opCode |= (int)(((pDest[1])&0x7F)<<8);
@@ -239,53 +249,59 @@ static int ConcatLiteral(unsigned char *pDest, std::vector<unsigned char>& data)
 	pDest += skip;
 
 	// Literal Data
-	for (int idx = 0; idx < data.size(); ++idx)
+	for (int idx = 0; idx < data.size; ++idx)
 	{
-		*pDest++ = data[ idx ];
+		*pDest++ = data.pData[ idx ];
 	}
 
-	data.clear();
+	// Clear
+	data.pData += data.size;
+	data.size = 0;
 
 	return outSize;
 }
 
 //------------------------------------------------------------------------------
 
-static int EmitLiteral(unsigned char *pDest, std::vector<unsigned char>& data)
+static int EmitLiteral(unsigned char *pDest, DataString& data)
 {
 	// Return Size
-	int outSize = 2 + (int)data.size();
+	int outSize = 2 + (int)data.size;
 
 	// Opcode
-	*pDest++ = (unsigned char)(data.size() & 0xFF);
-	*pDest++ = (unsigned char)((data.size() >> 8) & 0x7F);
+	*pDest++ = (unsigned char)(data.size & 0xFF);
+	*pDest++ = (unsigned char)((data.size >> 8) & 0x7F);
 
 	// Literal Data
-	for (int idx = 0; idx < data.size(); ++idx)
+	for (int idx = 0; idx < data.size; ++idx)
 	{
-		*pDest++ = data[ idx ];
+		*pDest++ = data.pData[ idx ];
 	}
 
-	data.clear();
+	// Clear
+	data.pData += data.size;
+	data.size = 0;
 
 	return outSize;
 }
 
 //------------------------------------------------------------------------------
 
-static int EmitReference(unsigned char *pDest, int dictionaryOffset, std::vector<unsigned char>& data)
+static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString& data)
 {
 	// Return Size
 	int outSize = 2 + 2;
 
 	// Opcode
-	*pDest++ = (unsigned char)(data.size() & 0xFF);
-	*pDest++ = (unsigned char)((data.size() >> 8) & 0x7F) | 0x80;
+	*pDest++ = (unsigned char)(data.size & 0xFF);
+	*pDest++ = (unsigned char)((data.size >> 8) & 0x7F) | 0x80;
 
 	*pDest++ = (unsigned char)(dictionaryOffset & 0xFF);
 	*pDest++ = (unsigned char)((dictionaryOffset>>8) & 0xFF);
 
-	data.clear();
+	// Clear
+	data.pData += data.size;
+	data.size = 0;
 
 	return outSize;
 }
