@@ -27,7 +27,7 @@ static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString&
 static int DictionaryMatch(const DataString& data, int dictionarySize);
 
 // Stuff I need for a faster version
-static DataString LongestMatch(const DataString& data, const DataString* dictionary);
+static DataString LongestMatch(const DataString& data, const DataString& dictionary);
 
 //
 //  New Version, still Brute Force, but not as many times
@@ -47,7 +47,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 	sourceData.size  = sourceSize;
 
 	// Remember, this eventually will point at the frame buffer
-	dictionaryData.pData = pSource
+	dictionaryData.pData = pSource;
 	dictionaryData.size = 0;
 
 	// dumb last emit is a literal stuff
@@ -61,7 +61,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		if (0 == candidateData.size)
 		{
 			candidateData.size = 1;
-			candidateData.pData = sourceData;
+			candidateData.pData = sourceData.pData;
 		}
 
 		// Adjust source stream
@@ -73,13 +73,13 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		if (candidateData.size > 3)
 		{
 			// Emit a dictionary reference
-			pDest += EmitReference(pDest, candidateData.pData - pSource, candidateData);
+			pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
+			bLastEmitIsLiteral = false;
 		}
 		else if (bLastEmitIsLiteral)
 		{
 			// Concatenate this literal onto the previous literal
 			pDest += ConcatLiteral(pLastLiteralDest, candidateData);
-			bLastEmitIsLiteral = false;
 		}
 		else
 		{
@@ -90,7 +90,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		}
 	}
 
-	return pDest - pOriginalDest;
+	return (int)(pDest - pOriginalDest);
 }
 
 
@@ -98,7 +98,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 // This works, but it's stupidly slow, because it uses brute force, and
 // because the brute force starts over everytime I grow the data string
 //
-int OLD_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
+int old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 {
 	printf("LZB_Compress %d bytes\n", sourceSize);
 
@@ -226,6 +226,10 @@ static int AddDictionary(const DataString& data, int dictionarySize)
 	return dictionarySize;
 }
 
+//------------------------------------------------------------------------------
+//
+// Return longest match of data, in dictionary
+//
 
 DataString LongestMatch(const DataString& data, const DataString& dictionary)
 {
@@ -234,11 +238,84 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 	result.size = 0;
 
 	// Find the longest matching data in the dictionary
-	if (dictionary.size > 0)
+	if ((dictionary.size > 0) && (data.size > 0))
 	{
+		DataString candidate;
+		candidate.pData = data.pData;
+		candidate.size = 0;
+
 		// First Check for a pattern / run-length style match
+		// Check the end of the dictionary, to see if this data could be a
+		// pattern "run" (where we can repeat a pattern for X many times for free
+		// using the memcpy with overlapping source/dest buffers)
+		// (This is a dictionary based pattern run/length)
+		{
+			// Check for pattern sizes, start small
+			int max_pattern_size = 4096;
+			if (dictionary.size < max_pattern_size)  max_pattern_size = dictionary.size;
+			if (data.size < max_pattern_size) max_pattern_size = data.size;
 
+			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
+			{
+				bool bMatch = true;
+				int pattern_start = dictionary.size - pattern_size;
 
+				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
+				{
+					if (data.pData[ dataIndex ] == dictionary.pData[ pattern_start + (dataIndex % pattern_size) ])
+					{
+						candidate.pData = dictionary.pData + pattern_start;
+						candidate.size = dataIndex+1;
+						continue;
+					}
+
+					bMatch = false;
+					break;
+				}
+
+				if (candidate.size < pattern_size)
+					break;
+
+				if (candidate.size > result.size)
+				{
+					result = candidate;
+				}
+			}
+		}
+
+		// As an optimization
+		int dictionarySize = dictionary.size - 1;	// This last string has already been checked by, the
+												    // run-length matcher above
+
+		if (dictionarySize >= candidate.size)
+		{
+			// Check the dictionary for a match, brute force
+			for (int idx = 0; idx <= (dictionarySize-candidate.size); ++idx)
+			{
+				bool bMatch = true;
+				for (int dataIdx = 0; dataIdx < data.size; ++dataIdx)
+				{
+					if (data.pData[ dataIdx ] == dictionary.pData[ idx + dataIdx ])
+					{
+						if (dataIdx > (candidate.size-1))
+						{
+							candidate.pData = dictionary.pData + idx;
+							candidate.size = dataIdx - 1;
+						}
+						continue;
+					}
+
+					bMatch = false;
+					break;
+				}
+
+				if (candidate.size > result.size)
+				{
+					result = candidate;
+					break;
+				}
+			}
+		}
 	}
 
 	return result;
@@ -301,8 +378,6 @@ static int DictionaryMatch(const DataString& data, int dictionarySize)
 	{
 		return -1;
 	}
-
-	int dictionaryOffset = 0;
 
 	int result = -1;
 
