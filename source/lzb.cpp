@@ -9,6 +9,7 @@
 #include "bctypes.h"
 
 #define MAX_DICTIONARY_SIZE (32 * 1024)
+#define MAX_STRING_SIZE     (16383)
 //
 // Yes This is a 32K Buffer, of bytes, with no structure to it
 //
@@ -98,7 +99,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 // This works, but it's stupidly slow, because it uses brute force, and
 // because the brute force starts over everytime I grow the data string
 //
-int old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
+int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 {
 	printf("LZB_Compress %d bytes\n", sourceSize);
 
@@ -257,7 +258,6 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 
 			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
 			{
-				bool bMatch = true;
 				int pattern_start = dictionary.size - pattern_size;
 
 				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
@@ -269,12 +269,11 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 						continue;
 					}
 
-					bMatch = false;
 					break;
 				}
 
-				if (candidate.size < pattern_size)
-					break;
+				//if (candidate.size < pattern_size)
+				//	break;
 
 				if (candidate.size > result.size)
 				{
@@ -284,34 +283,42 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 		}
 
 		// As an optimization
-		int dictionarySize = dictionary.size - 1;	// This last string has already been checked by, the
+		int dictionarySize = dictionary.size; // - 1;	// This last string has already been checked by, the
 												    // run-length matcher above
 
-		if (dictionarySize >= candidate.size)
+		// As the size grows, we're missing potential matches in here
+		// I think the best way to counter this is to attempt somthing
+		// like KMP
+
+		if (dictionarySize > candidate.size)
 		{
 			// Check the dictionary for a match, brute force
-			for (int idx = 0; idx <= (dictionarySize-candidate.size); ++idx)
+			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
 			{
-				bool bMatch = true;
-				for (int dataIdx = 0; dataIdx < data.size; ++dataIdx)
+				int sizeAvailable = dictionarySize - dictionaryIndex;
+
+				if (sizeAvailable > data.size) sizeAvailable = data.size;
+
+				// this could index off the end of the dictionary!!! FIX ME
+				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
 				{
-					if (data.pData[ dataIdx ] == dictionary.pData[ idx + dataIdx ])
+					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
 					{
-						if (dataIdx > (candidate.size-1))
+						if (dataIndex >= candidate.size)
 						{
-							candidate.pData = dictionary.pData + idx;
-							candidate.size = dataIdx - 1;
+							candidate.pData = dictionary.pData + dictionaryIndex;
+							candidate.size = dataIndex + 1;
 						}
 						continue;
 					}
 
-					bMatch = false;
 					break;
 				}
 
 				if (candidate.size > result.size)
 				{
 					result = candidate;
+					//dictionaryIndex = -1;
 					break;
 				}
 			}
@@ -504,10 +511,15 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 {
 	int decompressedBytes = 0;
 
+	unsigned char *pOriginalSource = pSource;
+
 	while (decompressedBytes < destSize)
 	{
 		u16 opcode  = *pSource++;
 		    opcode |= ((u16)(*pSource++))<<8;
+
+		//printf("%04X:", (unsigned int)(pSource-pOriginalSource));
+
 
 		if (opcode & 0x8000)
 		{
@@ -518,8 +530,18 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 			u16 offset  = *pSource++;
 			    offset |= ((u16)(*pSource++))<<8;
 
+			const char* overlapped = "";
+
+		   	if ((&pDest[ decompressedBytes ] - &pDest[ offset ]) < opcode)
+		    {
+				overlapped = "pattern";
+			}
+
 			my_memcpy(&pDest[ decompressedBytes ], &pDest[ offset ], opcode);
 			decompressedBytes += opcode;
+
+
+			//printf("%04X:Dic %04X %s\n",decompressedBytes, (unsigned int)opcode, overlapped);
 		}
 		else
 		{
@@ -527,6 +549,8 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 			memcpy(&pDest[ decompressedBytes ], pSource, opcode);
 			decompressedBytes += opcode;
 			pSource += opcode;
+
+			//printf("%04X:Lit %04X\n",decompressedBytes, (unsigned int)opcode);
 		}
 	}
 }
