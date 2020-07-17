@@ -113,6 +113,25 @@ int main(int argc, char* argv[])
 
 			const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
 
+			#if 1
+			unsigned char workbuffer[64*1024];
+			for (int idx = 0; idx < frameCount; ++idx)
+			{
+				int compressedSize = LZB_Compress(workbuffer, c1Datas[ idx ], 32 * 1024);
+				printf("compressedSize = %d\n", compressedSize);
+				unsigned char validationBuffer[ 32 * 1024 ];
+				LZB_Decompress(validationBuffer, workbuffer, 32 * 1024);
+				if (0 == memcmp(c1Datas[ idx ], validationBuffer, 32*1024))
+				{
+					printf("Decompression Validated\n");
+				}
+				else
+				{
+					printf("Decompression Corrupted\n");
+				}
+			}
+
+			#else
 			unsigned char workbuffer[64*1024];
 			unsigned char workbuffer2[64*1024];
 
@@ -140,6 +159,7 @@ int main(int argc, char* argv[])
 				}
 
 			}
+			#endif
 		}
 
 	}

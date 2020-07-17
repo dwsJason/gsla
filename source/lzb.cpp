@@ -59,7 +59,9 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 	{
 		candidateData = LongestMatch(sourceData, dictionaryData);
 
-		if (0 == candidateData.size)
+		// If no match, or the match is too small, then take the next byte
+		// and emit as literal
+		if ((0 == candidateData.size)) // || (candidateData.size < 4))
 		{
 			candidateData.size = 1;
 			candidateData.pData = sourceData.pData;
@@ -161,7 +163,22 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 			}
 			else
 			{
-				candidate_data.size++;
+				if (0 == candidate_data.size)
+				{
+					candidate_data.size++;
+				}
+				else
+				{
+					processedBytes--;
+
+					//if (candidate_data.size > 1)
+					//{
+					//	processedBytes -= (candidate_data.size - 1);
+					//	candidate_data.size = 1;
+					//}
+				}
+
+
 				// Add Dictionary
 				bytesInDictionary = AddDictionary(candidate_data, bytesInDictionary);
 
@@ -177,6 +194,7 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 					bytesEmitted += EmitLiteral(pDest + bytesEmitted, candidate_data);
 				}
 				bLastEmitIsLiteral = true;
+				//MatchOffset = -1;
 			}
 		}
 	}
@@ -518,7 +536,7 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 		u16 opcode  = *pSource++;
 		    opcode |= ((u16)(*pSource++))<<8;
 
-		//printf("%04X:", (unsigned int)(pSource-pOriginalSource));
+//		printf("%04X:", (unsigned int)(pSource-pOriginalSource));
 
 
 		if (opcode & 0x8000)
@@ -541,7 +559,7 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 			decompressedBytes += opcode;
 
 
-			//printf("%04X:Dic %04X %s\n",decompressedBytes, (unsigned int)opcode, overlapped);
+//			printf("%04X:Dic %04X %s\n",decompressedBytes, (unsigned int)opcode, overlapped);
 		}
 		else
 		{
@@ -550,7 +568,7 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 			decompressedBytes += opcode;
 			pSource += opcode;
 
-			//printf("%04X:Lit %04X\n",decompressedBytes, (unsigned int)opcode);
+//			printf("%04X:Lit %04X\n",decompressedBytes, (unsigned int)opcode);
 		}
 	}
 }
