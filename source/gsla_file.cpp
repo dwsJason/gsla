@@ -289,7 +289,7 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 //
 // Append a copy of raw image data into the class
 //
-void GSLA::AddImages( const std::vector<unsigned char*>& pFrameBytes )
+void GSLAFile::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 {
 	for (int idx = 0; idx < pFrameBytes.size(); ++idx)
 	{
@@ -303,7 +303,7 @@ void GSLA::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 //
 // Compress / Serialize a new GSLA File
 //
-void GSLA::SaveToFile(const char* pFilenamePath)
+void GSLAFile::SaveToFile(const char* pFilenamePath)
 {
 	// We're not going to even try encoding an empty file
 	if (m_pC1PixelMaps.size() < 1)
@@ -330,11 +330,11 @@ void GSLA::SaveToFile(const char* pFilenamePath)
 	pHeader->version = 0x8000; // Version 0, with a Ring/Loop Frame at the end
 
 	pHeader->width = m_widthPixels >> 1;
-	pHeader->height = m_widthHeight;
+	pHeader->height = m_heightPixels;
 
 	pHeader->frame_size = m_frameSize;
 
-	pHeader->frame_count = m_pC1PixelMaps.size() + 1; // + 1 for the ring frame
+	pHeader->frame_count = (unsigned int)m_pC1PixelMaps.size() + 1; // + 1 for the ring frame
 
 	//--------------------------------------------------------------------------
 	// Add the INITial frame chunk
@@ -387,7 +387,7 @@ void GSLA::SaveToFile(const char* pFilenamePath)
 	size_t anim_offset = bytes.size();
 
 	// Add Space for the ANIM Header
-	bytes.resize( bytes.size() + sizeof(GLSA_ANIM) );
+	bytes.resize( bytes.size() + sizeof(GSLA_ANIM) );
 	GSLA_ANIM* pANIM = (GSLA_ANIM*) &bytes[ anim_offset ];
 
 	pANIM->A = 'A'; pANIM->N = 'N'; pANIM->I ='I'; pANIM->M = 'M';
@@ -435,11 +435,11 @@ void GSLA::SaveToFile(const char* pFilenamePath)
 	bytes.push_back( 0x00 );
 
 	// Update the chunk length
-	pFRAM = (FanFile_FRAM*)&bytes[ fram_offset ];
-	pFRAM->chunk_length = (unsigned int) (bytes.size() - fram_offset);
+	pANIM = (GSLA_ANIM*)&bytes[ anim_offset ];
+	pANIM->chunk_length = (unsigned int) (bytes.size() - anim_offset);
 
 	// Update the header
-	pHeader = (FanFile_Header*)&bytes[0]; // Required
+	pHeader = (GSLA_Header*)&bytes[0]; // Required
 	pHeader->file_length = (unsigned int)bytes.size(); // get some valid data in there
 
 	// Try not to leak memory, even though we probably do

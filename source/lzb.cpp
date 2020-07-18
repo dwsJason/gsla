@@ -575,18 +575,72 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 
 //------------------------------------------------------------------------------
 //
-//  Encode a Frame in GSLA LZB Format
+// Compress a Frame in the GSLA LZB Format
 //
-int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize, unsigned char* pDataStart, int dictionarySize)
+int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
+				  unsigned char* pDataStart, unsigned char* pDictionary,
+				  int dictionarySize)
 {
-}
+//	printf("LZBA Compress %d bytes\n", sourceSize);
 
-//------------------------------------------------------------------------------
-//
-// Decompress a Frame in the GSLA LZB Format
-//
-int LZBA_Decompress(unsigned char* pDest, unsigned char* pSource, unsigned char* pDataStart)
-{
+	unsigned char *pOriginalDest = pDest;
+
+	DataString sourceData;
+	DataString dictionaryData;
+	DataString candidateData;
+
+	// Source Data Stream - will compress until the size is zero
+	sourceData.pData = pSource;
+	sourceData.size  = sourceSize;
+
+	// Dictionary is the Frame Buffer
+	dictionaryData.pData = pDictionary;
+	dictionaryData.size = dictionarySize;
+
+	// dumb last emit is a literal stuff
+	bool bLastEmitIsLiteral = false;
+	unsigned char* pLastLiteralDest = nullptr;
+
+	while (sourceData.size > 0)
+	{
+		candidateData = LongestMatch(sourceData, dictionaryData);
+
+		// If no match, or the match is too small, then take the next byte
+		// and emit as literal
+		if ((0 == candidateData.size)) // || (candidateData.size < 4))
+		{
+			candidateData.size = 1;
+			candidateData.pData = sourceData.pData;
+		}
+
+		// Adjust source stream
+		sourceData.pData += candidateData.size;
+		sourceData.size  -= candidateData.size;
+
+		dictionaryData.size = AddDictionary(candidateData, dictionaryData.size);
+
+		if (candidateData.size > 3)
+		{
+			// Emit a dictionary reference
+			pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
+			bLastEmitIsLiteral = false;
+		}
+		else if (bLastEmitIsLiteral)
+		{
+			// Concatenate this literal onto the previous literal
+			pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+		}
+		else
+		{
+			// Emit a new literal
+			pLastLiteralDest = pDest;
+			bLastEmitIsLiteral = true;
+			pDest += EmitLiteral(pDest, candidateData);
+		}
+	}
+
+	return (int)(pDest - pOriginalDest);
+
 }
 
 //------------------------------------------------------------------------------
