@@ -1,5 +1,7 @@
 //
 // GSLA - GS LZB Animation Tool
+// 
+// Look in gsla_file.cpp/h for more information about the file format
 //
 
 #include <stdio.h>
@@ -7,16 +9,20 @@
 #include <string>
 
 #include "c2_file.h"
+#include "gsla_file.h"
+
 #include "lzb.h"
 
 //------------------------------------------------------------------------------
 static void helpText()
 {
-	printf("GSLA - v0.0\n");
+	printf("GSLA - v1.0\n");
 	printf("--------------\n");
-	printf("GS Lzb Animation Tool\n");
+	printf("GS Lzb Animation Creation Tool\n");
 	printf("\n");
 	printf("\ngsla [options] <input_file> <outfile>\n");
+	printf("\n\n There are no [options] yet\n");
+	printf("Converts from C2 to GSLA\n");
 
 	exit(-1);
 }
@@ -111,8 +117,25 @@ int main(int argc, char* argv[])
 				helpText();
 			}
 
+			if (pOutfilePath)
+			{
+				const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
+
+				printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
+
+				GSLAFile anim(320,200, 0x8000);
+
+				anim.AddImages(c1Datas);
+
+				anim.SaveToFile(pOutfilePath);
+
+			}
+
+			#if 0
 			const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
 
+			// LZB Testing Code, that I should probalby remove from this file
+			// Just ignore this block of code
 			#if 1
 			unsigned char workbuffer[64*1024];
 			for (int idx = 0; idx < frameCount; ++idx)
@@ -159,6 +182,7 @@ int main(int argc, char* argv[])
 				}
 
 			}
+			#endif
 			#endif
 		}
 

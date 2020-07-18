@@ -574,4 +574,20 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 }
 
 //------------------------------------------------------------------------------
+//
+//  Encode a Frame in GSLA LZB Format
+//
+int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize, unsigned char* pDataStart, int dictionarySize)
+{
+}
+
+//------------------------------------------------------------------------------
+//
+// Decompress a Frame in the GSLA LZB Format
+//
+int LZBA_Decompress(unsigned char* pDest, unsigned char* pSource, unsigned char* pDataStart)
+{
+}
+
+//------------------------------------------------------------------------------
 

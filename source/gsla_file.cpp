@@ -114,17 +114,21 @@
 //
 // xxx_xxxx_xxxx_xxx is the number of bytes 1-16384 to follow (0 == 1 byte)
 //
-//%0xxx_xxxx_xxxx_xxx0 - Copy Bytes - straight copy bytes
+//%0xxx_xxxx_xxxx_xxx1 - Copy Bytes - straight copy bytes
 //%1xxx_xxxx_xxxx_xxx1 - Skip Bytes - skip bytes / move the cursor
 //%1xxx_xxxx_xxxx_xxx0 - Dictionary Copy Bytes from  frame buffer to frame buffer
 //
-//%0000_0000_0000_0001- Source Skip -> Source pointer skips to next bank of data
-//%0000_0000_0000_0011- End of Frame - end of frame
-//%0000_0000_0000_0111- End of Animation / End of File / no more frames
+//%0000_0000_0000_0000- Source Skip -> Source pointer skips to next bank of data
+//%0000_0000_0000_0010- End of Frame - end of frame
+//%0000_0000_0000_0110- End of Animation / End of File / no more frames
+//
 //
 // other remaining codes, are reserved for future expansion
 
 #include "gsla_file.h"
+
+#include "lzb.h"
+
 #include <stdio.h>
 
 // If these structs are the wrong size, there's an issue with type sizes, and
@@ -143,6 +147,17 @@ GSLAFile::GSLAFile(const char *pFilePath)
 {
 	LoadFromFile(pFilePath);
 }
+
+//------------------------------------------------------------------------------
+
+GSLAFile::GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes )
+	: m_widthPixels(iWidthPixels)
+	, m_heightPixels(iHeightPixels)
+	, m_frameSize( iFrameSizeBytes )
+{
+
+}
+
 //------------------------------------------------------------------------------
 
 GSLAFile::~GSLAFile()
@@ -269,4 +284,178 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 
 	//DecompressAnim(pTargetBuffer, pData);
 }
+
+//------------------------------------------------------------------------------
+//
+// Append a copy of raw image data into the class
+//
+void GSLA::AddImages( const std::vector<unsigned char*>& pFrameBytes )
+{
+	for (int idx = 0; idx < pFrameBytes.size(); ++idx)
+	{
+		unsigned char* pPixels = new unsigned char[ m_frameSize ];
+		memcpy(pPixels, pFrameBytes[ idx ], m_frameSize );
+		m_pC1PixelMaps.push_back( pPixels );
+	}
+}
+
+//------------------------------------------------------------------------------
+//
+// Compress / Serialize a new GSLA File
+//
+void GSLA::SaveToFile(const char* pFilenamePath)
+{
+	// We're not going to even try encoding an empty file
+	if (m_pC1PixelMaps.size() < 1)
+	{
+		return;
+	}
+
+	// serialize to memory, then save that to a file
+	std::vector<unsigned char> bytes;
+
+	//--------------------------------------------------------------------------
+	// Add the header
+	bytes.resize( bytes.size() + sizeof(GSLA_Header) );
+
+	//$$JGA Rememeber, you have to set the pointer, before every access
+	//$$JGA to the header data, because vector is going to change out
+	//$$JGA memory addresses from underneath you
+	GSLA_Header* pHeader = (GSLA_Header*)&bytes[0];
+
+	pHeader->G = 'G'; pHeader->S = 'S'; pHeader->L = 'L'; pHeader->A = 'A';
+
+	pHeader->file_length = 0;  // Temp File Length
+
+	pHeader->version = 0x8000; // Version 0, with a Ring/Loop Frame at the end
+
+	pHeader->width = m_widthPixels >> 1;
+	pHeader->height = m_widthHeight;
+
+	pHeader->frame_size = m_frameSize;
+
+	pHeader->frame_count = m_pC1PixelMaps.size() + 1; // + 1 for the ring frame
+
+	//--------------------------------------------------------------------------
+	// Add the INITial frame chunk
+	//
+	// If there's only an initial frame, I guess this becomes a picture
+	//
+
+	size_t init_offset = bytes.size();
+
+	// Add space for the INIT header
+	bytes.resize( bytes.size() + sizeof(GSLA_INIT) );
+	GSLA_INIT* pINIT = (GSLA_INIT*) &bytes[ init_offset ];
+
+	pINIT->I = 'I'; pINIT->N = 'N'; pINIT->i = 'I'; pINIT->T = 'T';
+	pINIT->chunk_length = 0; // temp chunk size
+
+	// Need a place to put compressed data, in theory it could be bigger
+	// than the original data, I think if that happens, the image was probably
+	// designed to break this, anyway, give double theoretical max
+	unsigned char* pWorkBuffer = new unsigned char[ m_frameSize * 2 ];
+
+	unsigned char* pInitialFrame = m_pC1PixelMaps[ 0 ];
+
+	// We're not worried about bank wrap on the first frame, and we don't have a pre-populated
+	// dictionary
+	int compressedSize = LZBA_Compress(pWorkBuffer, pInitialFrame, m_frameSize,
+									   pInitialFrame, pInitialFrame);
+
+	for (int compressedIndex = 0; compressedIndex < compressedSize; ++compressedIndex)
+	{
+		bytes.push_back(pWorkBuffer[ compressedIndex ]);
+	}
+
+	// Insert EOF/ End of Animation Done opcode
+	bytes.push_back( 0x06 );
+	bytes.push_back( 0x00 );
+
+
+	// Reset pointer to the pINIT (as the baggage may have shifted)
+	pINIT = (GSLA_INIT*) &bytes[ init_offset ];
+	pINIT->chunk_length = (unsigned int) (bytes.size() - init_offset);
+
+	//--------------------------------------------------------------------------
+	// Add the ANIMation frames chunk
+	//
+	// We always add this, because we always add a Ring/Loop frame, we always
+	// end up with at least 2 frames
+	//
+
+	size_t anim_offset = bytes.size();
+
+	// Add Space for the ANIM Header
+	bytes.resize( bytes.size() + sizeof(GLSA_ANIM) );
+	GSLA_ANIM* pANIM = (GSLA_ANIM*) &bytes[ anim_offset ];
+
+	pANIM->A = 'A'; pANIM->N = 'N'; pANIM->I ='I'; pANIM->M = 'M';
+	pANIM->chunk_length = 0; // temporary chunk size
+
+	// Initialize the Canvas with the initial frame (we alread exported this)
+	unsigned char *pCanvas = new unsigned char[ m_frameSize ];
+	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
+
+	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
+
+	// Let's encode some frames buddy
+	for (int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
+	{
+		// I don't want random data in the bank gaps, so initialize this
+		// buffer with zero
+		memset(pWorkBuffer, 0, m_frameSize * 2);
+
+		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex],
+									  m_frameSize, pWorkBuffer-bytes.size(),
+									  pCanvas, m_frameSize );
+
+		for (int frameIndex = 0; frameIndex < frameSize; ++frameIndex)
+		{
+			bytes.push_back(pWorkBuffer[ frameIndex ]);
+		}
+	}
+
+	// Add the RING Frame
+	memset(pWorkBuffer, 0, m_frameSize * 2);
+
+	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ 0 ],
+								  m_frameSize, pWorkBuffer-bytes.size(),
+								  pCanvas, m_frameSize  );
+
+	for (int ringIndex = 0; ringIndex < ringSize; ++ringIndex)
+	{
+		bytes.push_back(pWorkBuffer[ ringIndex ]);
+	}
+
+	delete[] pCanvas; pCanvas = nullptr;
+
+	// Insert End of file/ End of Animation Done opcode
+	bytes.push_back( 0x06 );
+	bytes.push_back( 0x00 );
+
+	// Update the chunk length
+	pFRAM = (FanFile_FRAM*)&bytes[ fram_offset ];
+	pFRAM->chunk_length = (unsigned int) (bytes.size() - fram_offset);
+
+	// Update the header
+	pHeader = (FanFile_Header*)&bytes[0]; // Required
+	pHeader->file_length = (unsigned int)bytes.size(); // get some valid data in there
+
+	// Try not to leak memory, even though we probably do
+	delete[] pWorkBuffer;
+
+	//--------------------------------------------------------------------------
+	// Create the file and write it
+	FILE* pFile = nullptr;
+	errno_t err = fopen_s(&pFile, pFilenamePath, "wb");
+
+	if (0==err)
+	{
+		fwrite(&bytes[0], sizeof(unsigned char), bytes.size(), pFile);
+		fclose(pFile);
+	}
+}
+
+//------------------------------------------------------------------------------
 
