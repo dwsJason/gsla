@@ -141,10 +141,12 @@
   <ItemGroup>
     <ClInclude Include="..\source\bctypes.h" />
     <ClInclude Include="..\source\c2_file.h" />
+    <ClInclude Include="..\source\gsla_file.h" />
     <ClInclude Include="..\source\lzb.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\source\c2_file.cpp" />
+    <ClCompile Include="..\source\gsla_file.cpp" />
     <ClCompile Include="..\source\lzb.cpp" />
     <ClCompile Include="..\source\main.cpp" />
   </ItemGroup>

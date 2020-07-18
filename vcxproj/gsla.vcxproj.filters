@@ -20,6 +20,9 @@
     <ClInclude Include="..\source\lzb.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\source\gsla_file.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\source\c2_file.cpp">
@@ -29,6 +32,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\source\lzb.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\source\gsla_file.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
