@@ -8,8 +8,27 @@
 
 #include "bctypes.h"
 
+//
+// This is written specifically for the GSLA, so opcodes emitted are designed
+// to work with our version of a run/skip/dump
+//
+
+//
+//Command Word, encoded low-high, what the bits mean:
+//
+// xxx_xxxx_xxxx_xxx is the number of bytes 1-16384 to follow (0 == 1 byte)
+//
+//%0xxx_xxxx_xxxx_xxx1 - Copy Bytes - straight copy bytes
+//%1xxx_xxxx_xxxx_xxx1 - Skip Bytes - skip bytes / move the cursor
+//%1xxx_xxxx_xxxx_xxx0 - Dictionary Copy Bytes from  frame buffer to frame buffer
+//
+//%0000_0000_0000_0000- Source Skip -> Source pointer skips to next bank of data
+//%0000_0000_0000_0010- End of Frame - end of frame
+//%0000_0000_0000_0110- End of Animation / End of File / no more frames
+//
+
 #define MAX_DICTIONARY_SIZE (32 * 1024)
-#define MAX_STRING_SIZE     (16383)
+#define MAX_STRING_SIZE     (16384)
 //
 // Yes This is a 32K Buffer, of bytes, with no structure to it
 //
@@ -235,11 +254,11 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 // Return new dictionarySize
 static int AddDictionary(const DataString& data, int dictionarySize)
 {
-	//int dataIndex = 0;
-	//while ((dictionarySize < MAX_DICTIONARY_SIZE) && (dataIndex < data.size))
-	//{
-	//	pDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
-	//}
+	int dataIndex = 0;
+	while (dataIndex < data.size)
+	{
+		pDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
+	}
 
 	dictionarySize += data.size;
 
@@ -537,10 +556,18 @@ static int ConcatLiteral(unsigned char *pDest, DataString& data)
 	int opCode  = pDest[0];
 	    opCode |= (int)(((pDest[1])&0x7F)<<8);
 
+	opCode>>=1;
+	opCode+=1;
+	// opCode contains the length of the literal that's already encoded
+
     int skip = opCode;
 	opCode += outSize;
 
 	// Opcode
+	opCode -= 1;
+	opCode <<=1;
+	opCode |= 1;
+
 	*pDest++ = (unsigned char)(opCode & 0xFF);
 	*pDest++ = (unsigned char)((opCode >> 8) & 0x7F);
 
@@ -566,9 +593,15 @@ static int EmitLiteral(unsigned char *pDest, DataString& data)
 	// Return Size
 	int outSize = 2 + (int)data.size;
 
-	// Opcode
-	*pDest++ = (unsigned char)(data.size & 0xFF);
-	*pDest++ = (unsigned char)((data.size >> 8) & 0x7F);
+	unsigned short length  = (unsigned short)data.size;
+	length -= 1;
+
+	unsigned short opcode = length<<1;
+	opcode |= 0x0001;
+
+	// Opcode out
+	*pDest++ = (unsigned char)( opcode & 0xFF );
+	*pDest++ = (unsigned char)(( opcode>>8)&0xFF);
 
 	// Literal Data
 	for (int idx = 0; idx < data.size; ++idx)
@@ -590,12 +623,22 @@ static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString&
 	// Return Size
 	int outSize = 2 + 2;
 
-	// Opcode
-	*pDest++ = (unsigned char)(data.size & 0xFF);
-	*pDest++ = (unsigned char)((data.size >> 8) & 0x7F) | 0x80;
+	unsigned short length  = (unsigned short)data.size;
+	length -= 1;
 
-	*pDest++ = (unsigned char)(dictionaryOffset & 0xFF);
-	*pDest++ = (unsigned char)((dictionaryOffset>>8) & 0xFF);
+	unsigned short opcode = length<<1;
+	opcode |= 0x8000;
+
+	// Opcode out
+	*pDest++ = (unsigned char)( opcode & 0xFF );
+	*pDest++ = (unsigned char)(( opcode>>8)&0xFF);
+
+	// Destination Address out
+	unsigned short address = (unsigned short)dictionaryOffset;
+	address += 0x2000;	// So we don't have to add $2000 in the animation player
+
+	*pDest++ = (unsigned char)(address & 0xFF);
+	*pDest++ = (unsigned char)((address>>8)&0xFF);
 
 	// Clear
 	data.pData += data.size;
@@ -614,58 +657,6 @@ static void my_memcpy(u8* pDest, u8* pSrc, int length)
 	while (length-- > 0)
 	{
 		*pDest++ = *pSrc++;
-	}
-}
-
-//------------------------------------------------------------------------------
-//
-//  Simple Decompress, for validation
-//
-void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
-{
-	int decompressedBytes = 0;
-
-	unsigned char *pOriginalSource = pSource;
-
-	while (decompressedBytes < destSize)
-	{
-		u16 opcode  = *pSource++;
-		    opcode |= ((u16)(*pSource++))<<8;
-
-//		printf("%04X:", (unsigned int)(pSource-pOriginalSource));
-
-
-		if (opcode & 0x8000)
-		{
-			// Dictionary
-			opcode &= 0x7FFF;
-
-			// Dictionary Copy from the output stream
-			u16 offset  = *pSource++;
-			    offset |= ((u16)(*pSource++))<<8;
-
-			const char* overlapped = "";
-
-		   	if ((&pDest[ decompressedBytes ] - &pDest[ offset ]) < opcode)
-		    {
-				overlapped = "pattern";
-			}
-
-			my_memcpy(&pDest[ decompressedBytes ], &pDest[ offset ], opcode);
-			decompressedBytes += opcode;
-
-
-//			printf("%04X:Dic %04X %s\n",decompressedBytes, (unsigned int)opcode, overlapped);
-		}
-		else
-		{
-			// Literal Copy, from compressed stream
-			memcpy(&pDest[ decompressedBytes ], pSource, opcode);
-			decompressedBytes += opcode;
-			pSource += opcode;
-
-//			printf("%04X:Lit %04X\n",decompressedBytes, (unsigned int)opcode);
-		}
 	}
 }
 

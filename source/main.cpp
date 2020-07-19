@@ -11,8 +11,6 @@
 #include "c2_file.h"
 #include "gsla_file.h"
 
-#include "lzb.h"
-
 //------------------------------------------------------------------------------
 static void helpText()
 {
@@ -130,60 +128,6 @@ int main(int argc, char* argv[])
 				anim.SaveToFile(pOutfilePath);
 
 			}
-
-			#if 0
-			const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
-
-			// LZB Testing Code, that I should probalby remove from this file
-			// Just ignore this block of code
-			#if 1
-			unsigned char workbuffer[64*1024];
-			for (int idx = 0; idx < frameCount; ++idx)
-			{
-				int compressedSize = LZB_Compress(workbuffer, c1Datas[ idx ], 32 * 1024);
-				printf("compressedSize = %d\n", compressedSize);
-				unsigned char validationBuffer[ 32 * 1024 ];
-				LZB_Decompress(validationBuffer, workbuffer, 32 * 1024);
-				if (0 == memcmp(c1Datas[ idx ], validationBuffer, 32*1024))
-				{
-					printf("Decompression Validated\n");
-				}
-				else
-				{
-					printf("Decompression Corrupted\n");
-				}
-			}
-
-			#else
-			unsigned char workbuffer[64*1024];
-			unsigned char workbuffer2[64*1024];
-
-			for (int idx = 0; idx < frameCount; ++idx)
-			{
-				int oldCompressedSize = Old_LZB_Compress(workbuffer2, c1Datas[ idx ], 32 * 1024);
-				printf("old compressedSize = %d\n", oldCompressedSize);
-				int compressedSize = LZB_Compress(workbuffer, c1Datas[ idx ], 32 * 1024);
-				printf("compressedSize = %d\n", compressedSize);
-
-				unsigned char validationBuffer[ 32 * 1024 ];
-
-				printf("Decompress OLD\n");
-				LZB_Decompress(validationBuffer, workbuffer2, 32 * 1024);
-				printf("Decompress NEW\n");
-				LZB_Decompress(validationBuffer, workbuffer, 32 * 1024);
-
-				if (0 == memcmp(c1Datas[ idx ], validationBuffer, 32*1024))
-				{
-					printf("Decompression Validated\n");
-				}
-				else
-				{
-					printf("Decompression Corrupted\n");
-				}
-
-			}
-			#endif
-			#endif
 		}
 
 	}
