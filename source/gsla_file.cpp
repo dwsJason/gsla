@@ -242,7 +242,7 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
 			if (pINIT->IsValid())
 			{
 				// We have an initial frame chunk
-				UnpackInitialFrame(pINIT);
+				UnpackInitialFrame(pINIT, pHeader);
 			}
 			else if (pANIM->IsValid())
 			{
@@ -263,13 +263,13 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
 // Unpack the initial frame, that's been packed with an empty initial dictionary
 // So every byte of the buffer will be written out (no skip opcodes)
 //
-void GSLAFile::UnpackInitialFrame(GSLA_INIT* pINIT)
+void GSLAFile::UnpackInitialFrame(GSLA_INIT* pINIT, GSLA_Header* pHeader)
 {
 	unsigned char *pData = ((unsigned char*)pINIT) + sizeof(GSLA_INIT);
 
 	unsigned char *pTargetBuffer = m_pC1PixelMaps[ 0 ]; // Data needs to be pre allocated
 
-	//DecompressFrame(pTargetBuffer, pData);
+	DecompressFrame(pTargetBuffer, pData, (unsigned char*)pHeader);
 }
 
 //------------------------------------------------------------------------------
@@ -359,9 +359,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	unsigned char* pInitialFrame = m_pC1PixelMaps[ 0 ];
 
 	// We're not worried about bank wrap on the first frame, and we don't have a pre-populated
-	// dictionary
-	int compressedSize = LZBA_Compress(pWorkBuffer, pInitialFrame, m_frameSize,
-									   pInitialFrame, pInitialFrame);
+	// dictionary - Also use the best compression we can get here
+	int compressedSize = Old_LZB_Compress(pWorkBuffer, pInitialFrame, m_frameSize);
 
 	for (int compressedIndex = 0; compressedIndex < compressedSize; ++compressedIndex)
 	{
@@ -455,6 +454,124 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 		fwrite(&bytes[0], sizeof(unsigned char), bytes.size(), pFile);
 		fclose(pFile);
 	}
+}
+
+//------------------------------------------------------------------------------
+//
+// Std C memcpy seems to be stopping the copy from happening, when I overlap
+// the buffer to get a pattern run copy (overlapped buffers)
+//
+static void my_memcpy(unsigned char* pDest, unsigned char* pSrc, int length)
+{
+	while (length-- > 0)
+	{
+		*pDest++ = *pSrc++;
+	}
+}
+
+//------------------------------------------------------------------------------
+//
+//  pTarget is the Target Frame Buffer
+//  pData is the source data for a Frame
+// 
+//  pDataBaseAddress, is the base address wheret the animation file was loaded
+//  this is used so we can properly interpret bank-skip opcodes (data is broken
+//  into 64K chunks for the IIgs/65816)
+//  
+//  returns the number of bytes that have been processed in the pData
+//
+int GSLAFile::DecompressFrame(unsigned char* pTarget, unsigned char* pData, unsigned char* pDataBaseAddress)
+{
+	unsigned char *pDataStart = pData;
+
+	int cursorPosition = 0;
+	unsigned short opcode;
+
+	bool bDoWork = true;
+
+	while (bDoWork)
+	{
+		opcode  = pData[0];
+		opcode |= (((unsigned short)pData[1])<<8);
+
+		if (opcode & 0x8000)
+		{
+			if (opcode & 0x0001)
+			{
+				// Cursor Skip Forward
+				opcode = (opcode>>1) & 0x3FFF;
+				cursorPosition += (opcode+1);
+				pData+=2;
+			}
+			else
+			{
+				// Dictionary Copy
+				unsigned short dictionaryPosition = pData[2];
+				dictionaryPosition |= (((unsigned short)pData[3])<<8);
+
+				dictionaryPosition -= 0x2000;	// it's like this to to help the
+											    // GS decode it quicker
+
+				unsigned short length = ((opcode>>1) & 0x3FFF)+1;
+
+				my_memcpy(pTarget + cursorPosition, pTarget + dictionaryPosition, (int) length );
+
+				pData += 4;
+				cursorPosition += length;
+			}
+		}
+		else
+		{
+			if (opcode & 0x0001)
+			{
+				// Literal Copy Bytes
+				pData += 2;
+				unsigned short length = ((opcode>>1) & 0x3FFF)+1;
+
+				my_memcpy(pTarget + cursorPosition, pData, (int) length);
+
+				pData += length;
+				cursorPosition += length;
+			}
+			else
+			{
+				opcode = ((opcode>>1)) & 3;
+
+				switch (opcode)
+				{
+				case 0: // Source bank Skip
+					{
+						int offset = (int)(pData - pDataBaseAddress);
+
+						offset &= 0xFFFF0000;
+						offset += 0x00010000;
+
+						pData = pDataBaseAddress + offset;
+					}
+					break;
+				case 1: // End of frame
+					pData+=2;
+					bDoWork = false;
+					break;
+
+				case 2: // End of Animation
+					// Intentionally, leave cursor alone here
+					bDoWork = false;
+					break;
+
+				default:
+					// Reserved / Illegal
+					bDoWork = false;
+					break;
+				}
+
+			}
+		}
+
+
+	}
+
+	return (int)(pData - pDataStart);
 }
 
 //------------------------------------------------------------------------------

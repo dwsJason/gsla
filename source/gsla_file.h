@@ -110,7 +110,7 @@ typedef struct GSLA_CHUNK
 class GSLAFile
 {
 public:
-	// Load in a C2 File
+	// Load in a GSLA File
 	GSLAFile(const char *pFilePath);
 	~GSLAFile();
 
@@ -127,9 +127,11 @@ public:
 
 	const std::vector<unsigned char*>& GetPixelMaps() { return m_pC1PixelMaps; }
 
+	int DecompressFrame(unsigned char* pTarget, unsigned char* pData, unsigned char* pDataBaseAddress);
+
 private:
 
-	void UnpackInitialFrame(GSLA_INIT* pINIT);
+	void UnpackInitialFrame(GSLA_INIT* pINIT, GSLA_Header* pHeader);
 	void UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader);
 
 

@@ -29,13 +29,14 @@ static int DictionaryMatch(const DataString& data, int dictionarySize);
 
 // Stuff I need for a faster version
 static DataString LongestMatch(const DataString& data, const DataString& dictionary);
+static DataString LongestMatch(const DataString& data, const DataString& dictionary, int cursorPosition);
 
 //
 //  New Version, still Brute Force, but not as many times
 //
 int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 {
-	printf("LZB Compress %d bytes\n", sourceSize);
+	//printf("LZB Compress %d bytes\n", sourceSize);
 
 	unsigned char *pOriginalDest = pDest;
 
@@ -103,7 +104,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 //
 int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 {
-	printf("LZB_Compress %d bytes\n", sourceSize);
+	//printf("LZB_Compress %d bytes\n", sourceSize);
 
 	// Initialize Dictionary
 	int bytesInDictionary = 0;		// eventually add the ability to start with the dictionary filled
@@ -345,7 +346,102 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 
 	return result;
 }
+//------------------------------------------------------------------------------
+DataString LongestMatch(const DataString& data, const DataString& dictionary, int cursorPosition)
+{
+	DataString result;
+	result.pData = nullptr;
+	result.size = 0;
 
+	// Find the longest matching data in the dictionary
+	if ((dictionary.size > 0) && (data.size > 0))
+	{
+		DataString candidate;
+		candidate.pData = data.pData;
+		candidate.size = 0;
+
+		// First Check for a pattern / run-length style match
+		// Check the end of the dictionary, to see if this data could be a
+		// pattern "run" (where we can repeat a pattern for X many times for free
+		// using the memcpy with overlapping source/dest buffers)
+		// (This is a dictionary based pattern run/length)
+		{
+			// Check for pattern sizes, start small
+			int max_pattern_size = 4096;
+			if (dictionary.size < max_pattern_size)  max_pattern_size = dictionary.size;
+			if (data.size < max_pattern_size) max_pattern_size = data.size;
+
+			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
+			{
+				int pattern_start = dictionary.size - pattern_size;
+
+				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
+				{
+					if (data.pData[ dataIndex ] == dictionary.pData[ pattern_start + (dataIndex % pattern_size) ])
+					{
+						candidate.pData = dictionary.pData + pattern_start;
+						candidate.size = dataIndex+1;
+						continue;
+					}
+
+					break;
+				}
+
+				//if (candidate.size < pattern_size)
+				//	break;
+
+				if (candidate.size > result.size)
+				{
+					result = candidate;
+				}
+			}
+		}
+
+		// As an optimization
+		int dictionarySize = dictionary.size; // - 1;	// This last string has already been checked by, the
+												    // run-length matcher above
+
+		// As the size grows, we're missing potential matches in here
+		// I think the best way to counter this is to attempt somthing
+		// like KMP
+
+		if (dictionarySize > candidate.size)
+		{
+			// Check the dictionary for a match, brute force
+			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
+			{
+				int sizeAvailable = dictionarySize - dictionaryIndex;
+
+				if (sizeAvailable > data.size) sizeAvailable = data.size;
+
+				// this could index off the end of the dictionary!!! FIX ME
+				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
+				{
+					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
+					{
+						if (dataIndex >= candidate.size)
+						{
+							candidate.pData = dictionary.pData + dictionaryIndex;
+							candidate.size = dataIndex + 1;
+						}
+						continue;
+					}
+
+					break;
+				}
+
+				if (candidate.size > result.size)
+				{
+					result = candidate;
+					//dictionaryIndex = -1;
+					break;
+				}
+			}
+		}
+	}
+
+	return result;
+}
 
 //------------------------------------------------------------------------------
 //
@@ -576,6 +672,11 @@ void LZB_Decompress(unsigned char* pDest, unsigned char* pSource, int destSize)
 //------------------------------------------------------------------------------
 //
 // Compress a Frame in the GSLA LZB Format
+// 
+// The dictionary is also the canvas, so when we're finished the dictionary
+// buffer will match the original pSource buffer
+// 
+// If they both match to begin with, we just crap out an End of Frame opcode
 //
 int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  unsigned char* pDataStart, unsigned char* pDictionary,
@@ -583,6 +684,10 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 {
 //	printf("LZBA Compress %d bytes\n", sourceSize);
 
+	// Used for bank skip opcode emission
+	int bankOffset = (int)((pDest - pDataStart) & 0xFFFF);
+
+	// So we can track how big our compressed data ends up being
 	unsigned char *pOriginalDest = pDest;
 
 	DataString sourceData;
@@ -601,43 +706,94 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 	bool bLastEmitIsLiteral = false;
 	unsigned char* pLastLiteralDest = nullptr;
 
-	while (sourceData.size > 0)
+	int lastEmittedCursorPosition = 0; // This is the default for each frame
+
+	for (int cursorPosition = 0; cursorPosition < dictionarySize;)
 	{
-		candidateData = LongestMatch(sourceData, dictionaryData);
-
-		// If no match, or the match is too small, then take the next byte
-		// and emit as literal
-		if ((0 == candidateData.size)) // || (candidateData.size < 4))
+		if (pSource[ cursorPosition ] != pDictionary[ cursorPosition ])
 		{
-			candidateData.size = 1;
-			candidateData.pData = sourceData.pData;
-		}
+			// Here is some data that has to be processed, so let's decide
+			// how large of a chunk of data we're looking at here
 
-		// Adjust source stream
-		sourceData.pData += candidateData.size;
-		sourceData.size  -= candidateData.size;
+			// Do we need to emit a Skip opcode?, compare cursor to last emit
+			// and emit a skip command if we need it (I'm going want a gap of
+			// at least 3 bytes? before we call it the end
+			int tempCursorPosition = cursorPosition;
+			int gapCount = 0;
+			for (; tempCursorPosition < dictionarySize; ++tempCursorPosition)
+			{
+				if (pSource[ cursorPosition ] != pDictionary[ cursorPosition ])
+				{
+					gapCount = 0;
+				}
+				else
+				{
+					gapCount++;
+					if (gapCount >= 3)
+						break;
+				}
+			}
 
-		dictionaryData.size = AddDictionary(candidateData, dictionaryData.size);
+			tempCursorPosition -= gapCount;
 
-		if (candidateData.size > 3)
-		{
-			// Emit a dictionary reference
-			pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
-			bLastEmitIsLiteral = false;
-		}
-		else if (bLastEmitIsLiteral)
-		{
-			// Concatenate this literal onto the previous literal
-			pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+			// Now we know from cursorPosition to tempCursorPosition is data
+			// that we want to encode, we either literally copy it, or look
+			// to see if this data is already in the dictionary (so we can copy
+			// it from one part of the frame buffer to another part)
+
+			sourceData.pData = &pSource[ cursorPosition ];
+			sourceData.size = tempCursorPosition - cursorPosition;
+
+			while (sourceData.size > 0)
+			{
+				candidateData = LongestMatch(sourceData, dictionaryData, cursorPosition);
+
+				// If no match, or the match is too small, then take the next byte
+				// and emit as literal
+				if ((0 == candidateData.size)) // || (candidateData.size < 4))
+				{
+					candidateData.size = 1;
+					candidateData.pData = sourceData.pData;
+				}
+
+				// Adjust source stream
+				sourceData.pData += candidateData.size;
+				sourceData.size  -= candidateData.size;
+
+				// Modify the dictionary
+				cursorPosition = AddDictionary(candidateData, cursorPosition);
+				lastEmittedCursorPosition = cursorPosition;
+
+				if (candidateData.size > 3)
+				{
+					// Emit a dictionary reference
+					pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
+					bLastEmitIsLiteral = false;
+				}
+				else if (bLastEmitIsLiteral)
+				{
+					// Concatenate this literal onto the previous literal
+					pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+				}
+				else
+				{
+					// Emit a new literal
+					pLastLiteralDest = pDest;
+					bLastEmitIsLiteral = true;
+					pDest += EmitLiteral(pDest, candidateData);
+				}
+			}
 		}
 		else
 		{
-			// Emit a new literal
-			pLastLiteralDest = pDest;
-			bLastEmitIsLiteral = true;
-			pDest += EmitLiteral(pDest, candidateData);
+			// no change
+			cursorPosition++;
 		}
 	}
+
+	// Emit the End of Frame Opcode
+	*pDest++ = 0x02;
+	*pDest++ = 0x00;
 
 	return (int)(pDest - pOriginalDest);
 
