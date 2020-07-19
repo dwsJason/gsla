@@ -8,6 +8,8 @@
 
 #include "bctypes.h"
 
+#include "assert.h"
+
 //
 // This is written specifically for the GSLA, so opcodes emitted are designed
 // to work with our version of a run/skip/dump
@@ -387,12 +389,12 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 		{
 			// Check for pattern sizes, start small
 			int max_pattern_size = 4096;
-			if (dictionary.size < max_pattern_size)  max_pattern_size = dictionary.size;
+			if (cursorPosition < max_pattern_size)  max_pattern_size = cursorPosition;
 			if (data.size < max_pattern_size) max_pattern_size = data.size;
 
 			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
 			{
-				int pattern_start = dictionary.size - pattern_size;
+				int pattern_start = cursorPosition - pattern_size;
 
 				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
 				{
@@ -406,9 +408,6 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 					break;
 				}
 
-				//if (candidate.size < pattern_size)
-				//	break;
-
 				if (candidate.size > result.size)
 				{
 					result = candidate;
@@ -416,9 +415,9 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 			}
 		}
 
-		// As an optimization
-		int dictionarySize = dictionary.size; // - 1;	// This last string has already been checked by, the
-												    // run-length matcher above
+		// This will keep us from finding matches that we can't use
+
+		int dictionarySize = cursorPosition;
 
 		// As the size grows, we're missing potential matches in here
 		// I think the best way to counter this is to attempt somthing
@@ -457,6 +456,43 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 				}
 			}
 		}
+
+		// Look for matches beyond the cursor
+		dictionarySize = dictionary.size;
+
+		if ((dictionarySize-cursorPosition) > candidate.size)
+		{
+			// Check the dictionary for a match, brute force
+			for (int dictionaryIndex = cursorPosition; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
+			{
+				int sizeAvailable = dictionarySize - dictionaryIndex;
+
+				if (sizeAvailable > data.size) sizeAvailable = data.size;
+
+				// this could index off the end of the dictionary!!! FIX ME
+				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
+				{
+					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
+					{
+						if (dataIndex >= candidate.size)
+						{
+							candidate.pData = dictionary.pData + dictionaryIndex;
+							candidate.size = dataIndex + 1;
+						}
+						continue;
+					}
+
+					break;
+				}
+
+				if (candidate.size > result.size)
+				{
+					result = candidate;
+					break;
+				}
+			}
+		}
+
 	}
 
 	return result;
@@ -662,6 +698,63 @@ static void my_memcpy(u8* pDest, u8* pSrc, int length)
 
 //------------------------------------------------------------------------------
 //
+// Emit a Cursor Skip forward opcode
+//
+int EmitSkip(unsigned char* pDest, int skipSize)
+{
+	int outSize = 2;
+
+	unsigned short length  = (unsigned short)skipSize;
+	length -= 1;
+
+	unsigned short opcode = length<<1;
+	opcode |= 0x8001;
+	// Opcode out
+	*pDest++ = (unsigned char)( opcode & 0xFF );
+	*pDest++ = (unsigned char)(( opcode>>8)&0xFF);
+
+	return outSize;
+}
+
+//------------------------------------------------------------------------------
+//
+// Forcibly Emit a source Skip Opcode
+// 
+// return space_left_in_Bank
+//
+int EmitSourceSkip(unsigned char*& pDest, int space_left_in_bank)
+{
+	assert(space_left_in_bank >= 2);
+
+	*pDest++ = 0;
+	*pDest++ = 0;
+	space_left_in_bank-=2;
+
+	while (space_left_in_bank)
+	{
+		space_left_in_bank--;
+		*pDest++ = 0;
+	}
+
+	return 0x10000;
+}
+
+//------------------------------------------------------------------------------
+//
+// Conditionally shit out the Source Bank Skip
+//
+int CheckEmitSourceSkip(int checkSpace, unsigned char*& pDest, int space_left_in_bank)
+{
+	if ((checkSpace+2) > space_left_in_bank)
+	{
+		return EmitSourceSkip(pDest, space_left_in_bank);
+	}
+
+	return space_left_in_bank;
+}
+
+//------------------------------------------------------------------------------
+//
 // Compress a Frame in the GSLA LZB Format
 // 
 // The dictionary is also the canvas, so when we're finished the dictionary
@@ -699,6 +792,10 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 	int lastEmittedCursorPosition = 0; // This is the default for each frame
 
+	int space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
+
+   	space_left_in_bank = CheckEmitSourceSkip(0, pDest, space_left_in_bank);
+
 	for (int cursorPosition = 0; cursorPosition < dictionarySize;)
 	{
 		if (pSource[ cursorPosition ] != pDictionary[ cursorPosition ])
@@ -709,6 +806,20 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			// Do we need to emit a Skip opcode?, compare cursor to last emit
 			// and emit a skip command if we need it (I'm going want a gap of
 			// at least 3 bytes? before we call it the end
+			int skipSize = cursorPosition - lastEmittedCursorPosition;
+
+			if (skipSize)
+			{
+				space_left_in_bank = CheckEmitSourceSkip(2, pDest, space_left_in_bank);
+
+				// We need to Skip
+				pDest += EmitSkip(pDest, skipSize);
+				bLastEmitIsLiteral = false;
+				lastEmittedCursorPosition = cursorPosition;
+
+				space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
+			}
+
 			int tempCursorPosition = cursorPosition;
 			int gapCount = 0;
 			for (; tempCursorPosition < dictionarySize; ++tempCursorPosition)
@@ -757,21 +868,48 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 				if (candidateData.size > 3)
 				{
+					space_left_in_bank = CheckEmitSourceSkip(4, pDest, space_left_in_bank);
+
 					// Emit a dictionary reference
 					pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
 					bLastEmitIsLiteral = false;
+
+					space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 				}
 				else if (bLastEmitIsLiteral)
 				{
-					// Concatenate this literal onto the previous literal
-					pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+					// This is a problem for the source bank skip, we can't
+					// concatenate if we end up injecting a source bank skip opcode
+					// into the stream...  what to do???, if insert, we will need to
+					// do a "normal" literal emission, ugly
+
+					int space = CheckEmitSourceSkip(candidateData.size, pDest, space_left_in_bank);
+
+					if (space != space_left_in_bank)
+					{
+						// Emit a new literal
+						pLastLiteralDest = pDest;
+						bLastEmitIsLiteral = true;
+						pDest += EmitLiteral(pDest, candidateData);
+
+						space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
+					}
+					else
+					{
+						// Concatenate this literal onto the previous literal
+						pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+					}
 				}
 				else
 				{
+					space_left_in_bank = CheckEmitSourceSkip(2 + candidateData.size, pDest, space_left_in_bank);
+
 					// Emit a new literal
 					pLastLiteralDest = pDest;
 					bLastEmitIsLiteral = true;
 					pDest += EmitLiteral(pDest, candidateData);
+
+					space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 				}
 			}
 		}
@@ -781,6 +919,8 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			cursorPosition++;
 		}
 	}
+
+   	space_left_in_bank = CheckEmitSourceSkip(2, pDest, space_left_in_bank);
 
 	// Emit the End of Frame Opcode
 	*pDest++ = 0x02;

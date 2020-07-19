@@ -403,7 +403,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	{
 		// I don't want random data in the bank gaps, so initialize this
 		// buffer with zero
-		memset(pWorkBuffer, 0, m_frameSize * 2);
+		//memset(pWorkBuffer, 0, m_frameSize * 2);
 
 		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex],
 									  m_frameSize, pWorkBuffer-bytes.size(),
@@ -416,7 +416,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	}
 
 	// Add the RING Frame
-	memset(pWorkBuffer, 0, m_frameSize * 2);
+	//memset(pWorkBuffer, 0, m_frameSize * 2);
 
 	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ 0 ],
 								  m_frameSize, pWorkBuffer-bytes.size(),
@@ -430,6 +430,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	delete[] pCanvas; pCanvas = nullptr;
 
 	// Insert End of file/ End of Animation Done opcode
+	// -- There has to be room for this, or there wouldn't be room to insert
+	// -- a source bank skip opcode
 	bytes.push_back( 0x06 );
 	bytes.push_back( 0x00 );
 
