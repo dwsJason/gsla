@@ -127,6 +127,21 @@ int main(int argc, char* argv[])
 				
 				anim.SaveToFile(pOutfilePath);
 
+				#if 1
+				{
+					// Verify the conversion is good
+					// Load the file back in
+					GSLAFile verify(pOutfilePath);
+
+					const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
+
+					for (int idx = 0; idx < frames.size(); ++idx)
+					{
+						int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
+						printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
+					}
+				}
+				#endif
 			}
 		}
 

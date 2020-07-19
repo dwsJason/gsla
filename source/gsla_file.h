@@ -124,6 +124,7 @@ public:
 	int GetFrameCount() { return (int)m_pC1PixelMaps.size(); }
 	int GetWidth()  { return m_widthPixels; }
 	int GetHeight() { return m_heightPixels; }
+	int GetFrameSize() { return m_frameSize; }
 
 	const std::vector<unsigned char*>& GetPixelMaps() { return m_pC1PixelMaps; }
 

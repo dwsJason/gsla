@@ -265,9 +265,9 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
 //
 void GSLAFile::UnpackInitialFrame(GSLA_INIT* pINIT, GSLA_Header* pHeader)
 {
-	unsigned char *pData = ((unsigned char*)pINIT) + sizeof(GSLA_INIT);
+	unsigned char* pData = ((unsigned char*)pINIT) + sizeof(GSLA_INIT);
 
-	unsigned char *pTargetBuffer = m_pC1PixelMaps[ 0 ]; // Data needs to be pre allocated
+	unsigned char* pTargetBuffer = m_pC1PixelMaps[ 0 ]; // Data needs to be pre allocated
 
 	DecompressFrame(pTargetBuffer, pData, (unsigned char*)pHeader);
 }
@@ -278,11 +278,21 @@ void GSLAFile::UnpackInitialFrame(GSLA_INIT* pINIT, GSLA_Header* pHeader)
 //
 void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 {
-	unsigned char *pData = ((unsigned char*)pANIM) + sizeof(GSLA_ANIM);
+	unsigned char* pData = ((unsigned char*)pANIM) + sizeof(GSLA_ANIM);
 
-	unsigned char *pTargetBuffer = m_pC1PixelMaps[ 0 ]; // Data needs to be pre allocated
+	unsigned char *pCanvas = new unsigned char[m_frameSize];
 
-	//DecompressAnim(pTargetBuffer, pData);
+	// Initialize the Canvas with the first frame
+	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
+
+	for (int idx = 1; idx < m_pC1PixelMaps.size(); ++idx)
+	{
+		// Apply Changes to the Canvas
+		pData += DecompressFrame(pCanvas, pData, (unsigned char*) pHeader);
+
+		// Capture the Canvas
+		memcpy(m_pC1PixelMaps[idx], pCanvas, m_frameSize);
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -318,7 +328,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	// Add the header
 	bytes.resize( bytes.size() + sizeof(GSLA_Header) );
 
-	//$$JGA Rememeber, you have to set the pointer, before every access
+	//$$JGA Remember, you have to set the pointer, before every access
 	//$$JGA to the header data, because vector is going to change out
 	//$$JGA memory addresses from underneath you
 	GSLA_Header* pHeader = (GSLA_Header*)&bytes[0];
@@ -567,7 +577,7 @@ int GSLAFile::DecompressFrame(unsigned char* pTarget, unsigned char* pData, unsi
 					bDoWork = false;
 					break;
 
-				case 2: // End of Animation
+				case 3: // End of Animation
 					// Intentionally, leave cursor alone here
 					bDoWork = false;
 					break;
