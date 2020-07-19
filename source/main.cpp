@@ -124,7 +124,7 @@ int main(int argc, char* argv[])
 				GSLAFile anim(320,200, 0x8000);
 
 				anim.AddImages(c1Datas);
-
+				
 				anim.SaveToFile(pOutfilePath);
 
 			}

@@ -262,7 +262,7 @@ static int AddDictionary(const DataString& data, int dictionarySize)
 		pDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
 	}
 
-	dictionarySize += data.size;
+	//dictionarySize += data.size;
 
 	return dictionarySize;
 }
@@ -824,7 +824,7 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			int gapCount = 0;
 			for (; tempCursorPosition < dictionarySize; ++tempCursorPosition)
 			{
-				if (pSource[ cursorPosition ] != pDictionary[ cursorPosition ])
+				if (pSource[ tempCursorPosition ] != pDictionary[ tempCursorPosition ])
 				{
 					gapCount = 0;
 				}
@@ -844,7 +844,9 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			// it from one part of the frame buffer to another part)
 
 			sourceData.pData = &pSource[ cursorPosition ];
-			sourceData.size = tempCursorPosition - cursorPosition;
+			sourceData.size = tempCursorPosition - cursorPosition + 1;
+
+			cursorPosition = tempCursorPosition;
 
 			while (sourceData.size > 0)
 			{

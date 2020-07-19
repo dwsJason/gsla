@@ -351,6 +351,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	pINIT->I = 'I'; pINIT->N = 'N'; pINIT->i = 'I'; pINIT->T = 'T';
 	pINIT->chunk_length = 0; // temp chunk size
 
+	printf("Save Initial Frame\n");
+
 	// Need a place to put compressed data, in theory it could be bigger
 	// than the original data, I think if that happens, the image was probably
 	// designed to break this, anyway, give double theoretical max
@@ -361,6 +363,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	// We're not worried about bank wrap on the first frame, and we don't have a pre-populated
 	// dictionary - Also use the best compression we can get here
 	int compressedSize = Old_LZB_Compress(pWorkBuffer, pInitialFrame, m_frameSize);
+
+	printf("frameSize = %d\n", compressedSize);
 
 	for (int compressedIndex = 0; compressedIndex < compressedSize; ++compressedIndex)
 	{
@@ -396,11 +400,11 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	unsigned char *pCanvas = new unsigned char[ m_frameSize ];
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
-	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
-
 	// Let's encode some frames buddy
 	for (int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
 	{
+		printf("Save Frame %d\n", frameIndex+1);
+
 		// I don't want random data in the bank gaps, so initialize this
 		// buffer with zero
 		//memset(pWorkBuffer, 0, m_frameSize * 2);
@@ -408,6 +412,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex],
 									  m_frameSize, pWorkBuffer-bytes.size(),
 									  pCanvas, m_frameSize );
+
+		printf("frameSize = %d\n", frameSize);
+
 
 		for (int frameIndex = 0; frameIndex < frameSize; ++frameIndex)
 		{
@@ -418,9 +425,13 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	// Add the RING Frame
 	//memset(pWorkBuffer, 0, m_frameSize * 2);
 
+	printf("Save Ring Frame\n");
+
 	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ 0 ],
 								  m_frameSize, pWorkBuffer-bytes.size(),
 								  pCanvas, m_frameSize  );
+
+	printf("Ring Size %d\n", ringSize);
 
 	for (int ringIndex = 0; ringIndex < ringSize; ++ringIndex)
 	{
