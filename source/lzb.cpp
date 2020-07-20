@@ -416,6 +416,10 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 			}
 		}
 
+		// Not getting better than this
+		if (result.size == data.size)
+			return result;
+
 		// This will keep us from finding matches that we can't use
 
 		int dictionarySize = cursorPosition;
@@ -458,13 +462,19 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 			}
 		}
 
+		// Not getting better than this
+		if (result.size == data.size)
+			return result;
+
+
+		#if 1
 		// Look for matches beyond the cursor
 		dictionarySize = dictionary.size;
 
 		if ((dictionarySize-cursorPosition) > candidate.size)
 		{
 			// Check the dictionary for a match, brute force
-			for (int dictionaryIndex = cursorPosition; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
+			for (int dictionaryIndex = cursorPosition+3; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
 			{
 				int sizeAvailable = dictionarySize - dictionaryIndex;
 
@@ -493,7 +503,7 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 				}
 			}
 		}
-
+		#endif
 	}
 
 	return result;
@@ -855,7 +865,9 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				}
 				else
 				{
-					if (gapCount > 3)
+					// if there's a small amount of matching data, let's include
+					// it in the clump (try and reduce opcode emissions)
+					if (gapCount >= 3)
 						break;
 					gapCount++;
 				}
@@ -871,6 +883,7 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			sourceData.pData = &pSource[ cursorPosition ];
 			sourceData.size = tempCursorPosition - cursorPosition;
 
+			#if 0 // This Works
 			//--------------------------  Dump, so skip dump only
 			space_left_in_bank = CheckEmitSourceSkip(2+sourceData.size, pDest, space_left_in_bank);
 
@@ -878,8 +891,8 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 			pDest += EmitLiteral(pDest, sourceData);
 			lastEmittedCursorPosition = cursorPosition;
+			#endif
 
-			#if 0
 			while (sourceData.size > 0)
 			{
 				candidateData = LongestMatch(sourceData, dictionaryData, cursorPosition);
@@ -908,7 +921,6 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 					pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
 					bLastEmitIsLiteral = false;
 
-					space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 				}
 				else if (bLastEmitIsLiteral)
 				{
@@ -919,18 +931,18 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 					int space = CheckEmitSourceSkip(candidateData.size, pDest, space_left_in_bank);
 
-					if (space != space_left_in_bank)
+					if (space != (space_left_in_bank - candidateData.size))
 					{
+						space_left_in_bank = space-2;
+
 						// Emit a new literal
 						pLastLiteralDest = pDest;
-						bLastEmitIsLiteral = true;
 						pDest += EmitLiteral(pDest, candidateData);
-
-						space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 					}
 					else
 					{
 						// Concatenate this literal onto the previous literal
+						space_left_in_bank = space;
 						pDest += ConcatLiteral(pLastLiteralDest, candidateData);
 					}
 				}
@@ -942,11 +954,8 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 					pLastLiteralDest = pDest;
 					bLastEmitIsLiteral = true;
 					pDest += EmitLiteral(pDest, candidateData);
-
-					space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 				}
 			}
-			#endif
 		}
 		else
 		{

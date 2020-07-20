@@ -417,7 +417,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 
 		// I don't want random data in the bank gaps, so initialize this
 		// buffer with zero
-		//memset(pWorkBuffer, 0, m_frameSize * 2);
+		//memset(pWorkBuffer, 0xEA, m_frameSize * 2);
 
 		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex ],
 									  m_frameSize, pWorkBuffer-bytes.size(),
@@ -438,7 +438,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	}
 
 	// Add the RING Frame
-	//memset(pWorkBuffer, 0, m_frameSize * 2);
+	//memset(pWorkBuffer, 0xAB, m_frameSize * 2);
 
 	printf("Save Ring Frame\n");
 
