@@ -15,7 +15,7 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 //
 int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  unsigned char* pDataStart, unsigned char* pDictionary,
-				  int dictionarySize=0);
+				  int dictionarySize);
 
 #endif // LZB_H
 

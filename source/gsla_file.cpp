@@ -419,10 +419,15 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 		// buffer with zero
 		//memset(pWorkBuffer, 0, m_frameSize * 2);
 
-		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex],
+		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex ],
 									  m_frameSize, pWorkBuffer-bytes.size(),
 									  pCanvas, m_frameSize );
 
+		//int canvasDiff = memcmp(pCanvas, m_pC1PixelMaps[ frameIndex], m_frameSize);
+		//if (canvasDiff)
+		//{
+		//	printf("Canvas is not correct - %d\n", canvasDiff);
+		//}
 		printf("frameSize = %d\n", frameSize);
 
 

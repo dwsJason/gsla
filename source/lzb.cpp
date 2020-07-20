@@ -34,7 +34,7 @@
 //
 // Yes This is a 32K Buffer, of bytes, with no structure to it
 //
-static unsigned char *pDictionary = nullptr;
+static unsigned char *pGlobalDictionary = nullptr;
 
 struct DataString {
 	// Information about the data we're trying to match
@@ -70,6 +70,7 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 	sourceData.size  = sourceSize;
 
 	// Remember, this eventually will point at the frame buffer
+	pGlobalDictionary = pSource;
 	dictionaryData.pData = pSource;
 	dictionaryData.size = 0;
 
@@ -129,7 +130,7 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 
 	// Initialize Dictionary
 	int bytesInDictionary = 0;		// eventually add the ability to start with the dictionary filled
-	pDictionary = pSource;
+	pGlobalDictionary = pSource;
 
 	int processedBytes = 0;
 	int bytesEmitted = 0;
@@ -259,7 +260,7 @@ static int AddDictionary(const DataString& data, int dictionarySize)
 	int dataIndex = 0;
 	while (dataIndex < data.size)
 	{
-		pDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
+		pGlobalDictionary[ dictionarySize++ ] = data.pData[ dataIndex++ ];
 	}
 
 	//dictionarySize += data.size;
@@ -508,7 +509,7 @@ static int DictionaryMatch(const DataString& data, int dictionarySize)
 {
 	if( (0 == dictionarySize ) ||
 		(0 == data.size) ||
-		(data.size > 16384) ) // 16384 is largest string copy we can encode
+		(data.size > MAX_STRING_SIZE) ) // 16384 is largest string copy we can encode
 	{
 		return -1;
 	}
@@ -531,7 +532,7 @@ static int DictionaryMatch(const DataString& data, int dictionarySize)
 
 			for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
 			{
-				if (data.pData[ dataIndex ] == pDictionary[ pattern_start + (dataIndex % pattern_size) ])
+				if (data.pData[ dataIndex ] == pGlobalDictionary[ pattern_start + (dataIndex % pattern_size) ])
 					continue;
 
 				bMatch = false;
@@ -563,7 +564,7 @@ static int DictionaryMatch(const DataString& data, int dictionarySize)
 		bool bMatch = true;
 		for (int dataIdx = 0; dataIdx < data.size; ++dataIdx)
 		{
-			if (data.pData[ dataIdx ] == pDictionary[ idx + dataIdx ])
+			if (data.pData[ dataIdx ] == pGlobalDictionary[ idx + dataIdx ])
 				continue;
 
 			bMatch = false;
@@ -632,6 +633,8 @@ static int EmitLiteral(unsigned char *pDest, DataString& data)
 	unsigned short length  = (unsigned short)data.size;
 	length -= 1;
 
+	assert(length < MAX_STRING_SIZE);
+
 	unsigned short opcode = length<<1;
 	opcode |= 0x0001;
 
@@ -661,6 +664,8 @@ static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString&
 
 	unsigned short length  = (unsigned short)data.size;
 	length -= 1;
+
+	assert(length < MAX_STRING_SIZE);
 
 	unsigned short opcode = length<<1;
 	opcode |= 0x8000;
@@ -698,20 +703,36 @@ static void my_memcpy(u8* pDest, u8* pSrc, int length)
 
 //------------------------------------------------------------------------------
 //
-// Emit a Cursor Skip forward opcode
+// Emit one or more Cursor Skip forward opcode
 //
 int EmitSkip(unsigned char* pDest, int skipSize)
 {
-	int outSize = 2;
+	int outSize = 0;
+	int thisSkip = 0;
 
-	unsigned short length  = (unsigned short)skipSize;
-	length -= 1;
+	while (skipSize > 0)
+	{
+		outSize+=2;
 
-	unsigned short opcode = length<<1;
-	opcode |= 0x8001;
-	// Opcode out
-	*pDest++ = (unsigned char)( opcode & 0xFF );
-	*pDest++ = (unsigned char)(( opcode>>8)&0xFF);
+		thisSkip = skipSize;
+		if (thisSkip > MAX_STRING_SIZE)
+		{
+			thisSkip = MAX_STRING_SIZE;
+		}
+		skipSize -= thisSkip;
+
+
+		unsigned short length  = (unsigned short)thisSkip;
+		length -= 1;
+
+		assert(length < MAX_STRING_SIZE);
+
+		unsigned short opcode = length<<1;
+		opcode |= 0x8001;
+		// Opcode out
+		*pDest++ = (unsigned char)( opcode & 0xFF );
+		*pDest++ = (unsigned char)(( opcode>>8)&0xFF);
+	}
 
 	return outSize;
 }
@@ -750,6 +771,8 @@ int CheckEmitSourceSkip(int checkSpace, unsigned char*& pDest, int space_left_in
 		return EmitSourceSkip(pDest, space_left_in_bank);
 	}
 
+	space_left_in_bank -= checkSpace;
+
 	return space_left_in_bank;
 }
 
@@ -767,6 +790,8 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  int dictionarySize)
 {
 //	printf("LZBA Compress %d bytes\n", sourceSize);
+
+	pGlobalDictionary = pDictionary;
 
 	// Used for bank skip opcode emission
 	int bankOffset = (int)((pDest - pDataStart) & 0xFFFF);
@@ -810,14 +835,14 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 			if (skipSize)
 			{
-				space_left_in_bank = CheckEmitSourceSkip(2, pDest, space_left_in_bank);
+				int numSkips = (skipSize / MAX_STRING_SIZE) + 1;
+
+				space_left_in_bank = CheckEmitSourceSkip(2 * numSkips, pDest, space_left_in_bank);
 
 				// We need to Skip
 				pDest += EmitSkip(pDest, skipSize);
 				bLastEmitIsLiteral = false;
 				lastEmittedCursorPosition = cursorPosition;
-
-				space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 			}
 
 			int tempCursorPosition = cursorPosition;
@@ -830,9 +855,9 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				}
 				else
 				{
-					gapCount++;
-					if (gapCount >= 3)
+					if (gapCount > 3)
 						break;
+					gapCount++;
 				}
 			}
 
@@ -844,10 +869,17 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 			// it from one part of the frame buffer to another part)
 
 			sourceData.pData = &pSource[ cursorPosition ];
-			sourceData.size = tempCursorPosition - cursorPosition + 1;
+			sourceData.size = tempCursorPosition - cursorPosition;
 
-			cursorPosition = tempCursorPosition;
+			//--------------------------  Dump, so skip dump only
+			space_left_in_bank = CheckEmitSourceSkip(2+sourceData.size, pDest, space_left_in_bank);
 
+			cursorPosition = AddDictionary(sourceData, cursorPosition);
+
+			pDest += EmitLiteral(pDest, sourceData);
+			lastEmittedCursorPosition = cursorPosition;
+
+			#if 0
 			while (sourceData.size > 0)
 			{
 				candidateData = LongestMatch(sourceData, dictionaryData, cursorPosition);
@@ -914,6 +946,7 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 					space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart)&0xFFFF);
 				}
 			}
+			#endif
 		}
 		else
 		{
@@ -927,6 +960,14 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 	// Emit the End of Frame Opcode
 	*pDest++ = 0x02;
 	*pDest++ = 0x00;
+
+	for (int idx = 0; idx < dictionarySize; ++idx)
+	{
+		if (pSource[ idx ] != pDictionary[ idx ])
+		{
+			assert(0);
+		}
+	}
 
 	return (int)(pDest - pOriginalDest);
 
