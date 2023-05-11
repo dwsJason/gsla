@@ -250,7 +250,7 @@ void C2File::ApplyThrottle(int ThrottleSize, int CellSizeX, int CellSizeY)
 				deltaSize--;
 			}
 
-			// go to next indix in the cell, for the next time we process the cell
+			// go to next index in the cell, for the next time we process the cell
 			subIndex++;
 			if (subIndex >= bytesPerCell)
 			{
