@@ -14,12 +14,15 @@
 //------------------------------------------------------------------------------
 static void helpText()
 {
-	printf("GSLA - v1.0\n");
+	printf("GSLA - v1.1\n");
 	printf("--------------\n");
 	printf("GS Lzb Animation Creation Tool\n");
 	printf("\n");
-	printf("\ngsla [options] <input_file> <outfile>\n");
-	printf("\n\n There are no [options] yet\n");
+	printf("\ngsla [options] <input_file> <outfile>\n\n");
+	printf("options:\n");
+	printf("\t-t<bytes> Throttle bytes per frame\n");
+	printf("\t-g<x>x<y> Grid size, default 8x8\n");
+	printf("\nExample: gsla -t2960 -g8x8 movie.c2 movie.gsla\n\n");
 	printf("Converts from C2 to GSLA\n");
 
 	exit(-1);
@@ -28,6 +31,64 @@ static void helpText()
 
 //------------------------------------------------------------------------------
 // Local helper functions
+
+static bool contains(char x, const char* pSeparators)
+{
+	while (*pSeparators)
+	{
+		if (x == *pSeparators)
+		{
+			return true;
+		}
+		pSeparators++;
+	}
+
+	return false;
+}
+
+static std::vector<std::string> split(const std::string& s, const char* separators)
+{
+	std::vector<std::string> output;
+	std::string::size_type prev_pos = 0, pos = 0;
+
+	for (int index = 0; index < s.length(); ++index)
+	{
+		pos = index;
+
+		// if the index is a separator
+		if (contains(s[index], separators))
+		{
+			// if we've skipped a token, collect it
+			if (prev_pos != index)
+			{
+				output.push_back(s.substr(prev_pos, index-prev_pos));
+
+				// skip white space here
+				while (index < s.length())
+				{
+					if (contains(s[index], separators))
+					{
+						++index;
+					}
+					else
+					{
+						prev_pos = index;
+						pos = index;
+						break;
+					}
+				}
+			}
+			else
+			{
+				prev_pos++;
+			}
+		}
+	}
+
+    output.push_back(s.substr(prev_pos, pos-prev_pos+1)); // Last word
+
+    return output;
+}
 
 static std::string toLower(const std::string s)
 {
@@ -61,6 +122,11 @@ int main(int argc, char* argv[])
 	char* pInfilePath  = nullptr;
 	char* pOutfilePath = nullptr;
 
+	int throttle=0;  // no throttling
+					 // default 8x8 grid
+	int gridSizeX = 8;
+	int gridSizeY = 8;
+
 
 	// index 0 is the executable name
 
@@ -73,7 +139,29 @@ int main(int argc, char* argv[])
 		if ('-' == arg[0])
 		{
 			// Parse as an option
-			// Currently I have no options, so I'll just skip
+			if ('t' == arg[1])
+			{
+				// Set throttle size, which enables throttling
+				throttle = atoi(&arg[2]);
+				printf("Throttle = %d bytes per frame\n",throttle);
+
+			}
+			if ('g' == arg[1])
+			{
+				// set grid size for the throttler (this effects the pattern, when throttling kicks in)
+				std::string gridstring = toLower(&arg[2]);
+				std::vector<std::string> values = split(gridstring, "x");
+
+				if (values.size() != 2)
+				{
+					printf("invalid grid size setting: %s\n", arg);
+					helpText();
+				}
+
+				gridSizeX = atoi(values[0].c_str());
+				gridSizeY = atoi(values[1].c_str());
+
+			}
 		}
 		else if (nullptr == pInfilePath)
 		{
@@ -117,6 +205,22 @@ int main(int argc, char* argv[])
 
 			if (pOutfilePath)
 			{
+				if (0 != throttle)
+				{
+					printf("Grid Size  = %dx%d\n", gridSizeX, gridSizeY);
+
+					int numCellsX = 320/gridSizeX;
+					int numCellsY = 200/gridSizeY;
+					printf("Cell Count = %dx%d\n", numCellsX, numCellsY);
+
+					int numCells = numCellsX*numCellsY;
+					printf("Cell Total = %d\n", numCells);
+
+					printf("Each cell min budget = %d bytes\n", throttle/numCells);
+
+					c2data.ApplyThrottle(throttle, gridSizeX, gridSizeY);
+				}
+
 				const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
 
 				printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());

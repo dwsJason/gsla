@@ -57,9 +57,13 @@ public:
 	int GetWidth()  { return m_widthPixels; }
 	int GetHeight() { return m_heightPixels; }
 
+	void ApplyThrottle(int ThrottleSize, int CellSizeX, int CellSizeY);
+
 	const std::vector<unsigned char*>& GetPixelMaps() { return m_pC1PixelMaps; }
 
 private:
+
+	int CalcDifference(unsigned char* pC1Data0, unsigned char* pC1Data1);
 
 	int m_widthPixels;		// Width of image in pixels
 	int m_heightPixels;		// Height of image in pixels
