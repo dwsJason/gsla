@@ -1,0 +1,99 @@
+name: C++ Build and Release
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild Path
+        uses: microsoft/setup-msbuild@v1.3.1
+
+      - name: Build Windows Project
+        run: msbuild vcxproj/gsla.vcxproj /p:Configuration=Release
+     
+      - name: Show build directory contents
+        run: |
+          dir vcxproj/Release
+    
+      - name: Create Windows Archive
+        run: |
+          $zipName = "gsla_win_${{ github.ref_name }}.zip"
+          Compress-Archive -Path README.md, vcxproj/Release/gsla.exe -DestinationPath $zipName
+        shell: pwsh
+    
+      - name: Cache Windows Build
+        uses: actions/cache@v4
+        with:
+          path: gsla_win_${{ github.ref_name }}.zip
+          key: ${{ runner.os }}-cache-${{ github.sha }}
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install make
+
+      - name: Build Mac Project
+        run: make
+
+      - name: Create Mac Archive
+        run: |
+          zip gsla_mac_${{ github.ref_name }}.zip README.md gsla
+    
+      - name: Cache Mac Build
+        uses: actions/cache@v4
+        with:
+          path: gsla_mac_${{ github.ref_name }}.zip
+          key: ${{ runner.os }}-cache-${{ github.sha }}
+
+  create-release:
+    needs: [build-windows, build-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ macos-latest, windows-latest ]
+    steps:
+        ### WINDOWS ################
+      - name: Restore Windows Cache
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+            path: gsla_win_${{ github.ref_name }}.zip
+            key: ${{ runner.os }}-cache-${{ github.sha }}
+      - name: Create GitHub Release w/Windows Files
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            gsla_win_${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+        ### MACOS ##################
+      - name: Restore Mac Cache
+        if: matrix.os == 'macos-latest'
+        uses: actions/cache@v4
+        with:
+          path: gsla_mac_${{ github.ref_name }}.zip
+          key: ${{ runner.os }}-cache-${{ github.sha }}
+      - name: Create GitHub Release w/Windows Files
+        if: matrix.os == 'macos-latest'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            gsla_mac_${{ github.ref_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

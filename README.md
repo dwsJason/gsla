@@ -8,3 +8,20 @@ See https://github.com/dwsJason/gslaplay, for a GSOS Sample Application
 that can play these animations
 
 
+## Mac Build instructions
+
+Requires xcode (g++/clang++).
+
+
+Debug build (default):
+```
+make
+```
+Release build:
+```
+make CONFIG=Release
+```
+Clean build artifacts:
+```
+make clean
+```
