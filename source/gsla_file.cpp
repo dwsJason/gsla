@@ -483,7 +483,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 #ifdef _WIN32
     errno_t err = fopen_s(&pFile, pFilenamePath, "wb");
 #else
-    pFile = fopen(pFilenamePath, "rb");
+    pFile = fopen(pFilenamePath, "wb");
     errno_t err = (pFile == nullptr) ? errno : 0;
 #endif
 
@@ -491,6 +491,10 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	{
 		fwrite(&bytes[0], sizeof(unsigned char), bytes.size(), pFile);
 		fclose(pFile);
+	}
+	else
+	{
+		printf("Failed writing output with error %d\n",err);
 	}
 }
 
