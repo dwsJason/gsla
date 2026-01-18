@@ -62,7 +62,7 @@ void C2File::LoadFromFile(const char* pFilePath)
 	// Read the file into memory
 	FILE* pFile = nullptr;
 #ifdef _WIN32
-    errno_t err = fopen_s(&pFile, pFilePath, "wb");
+    errno_t err = fopen_s(&pFile, pFilePath, "rb");
 #else
     pFile = fopen(pFilePath, "rb");
     errno_t err = (pFile == nullptr) ? errno : 0;

@@ -190,7 +190,7 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
 	// Read the file into memory
 	FILE* pFile = nullptr;
 #ifdef _WIN32
-    errno_t err = fopen_s(&pFile, pFilePath, "wb");
+    errno_t err = fopen_s(&pFile, pFilePath, "rb");
 #else
     pFile = fopen(pFilePath, "rb");
     errno_t err = (pFile == nullptr) ? errno : 0;
@@ -318,7 +318,7 @@ void GSLAFile::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 //
 // Compress / Serialize a new GSLA File
 //
-void GSLAFile::SaveToFile(const char* pFilenamePath)
+void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 {
 	// We're not going to even try encoding an empty file
 	if (m_pC1PixelMaps.size() < 1)
@@ -418,7 +418,10 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	// Let's encode some frames buddy
 	for (int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
 	{
-		printf("Save Frame %d\n", frameIndex+1);
+		if (bVerbose)
+		{
+			printf("Save Frame %d\n", frameIndex + 1);
+		}
 
 		// I don't want random data in the bank gaps, so initialize this
 		// buffer with zero
@@ -433,7 +436,10 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 		//{
 		//	printf("Canvas is not correct - %d\n", canvasDiff);
 		//}
-		printf("frameSize = %d\n", frameSize);
+		if (bVerbose)
+		{
+			printf("frameSize = %d\n", frameSize);
+		}
 
 
 		for (int frameIndex = 0; frameIndex < frameSize; ++frameIndex)
