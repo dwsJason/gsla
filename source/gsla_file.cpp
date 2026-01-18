@@ -151,9 +151,9 @@ GSLAFile::GSLAFile(const char *pFilePath)
 //------------------------------------------------------------------------------
 
 GSLAFile::GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes )
-	: m_widthPixels(iWidthPixels)
+	: m_frameSize( iFrameSizeBytes )
+	, m_widthPixels(iWidthPixels)
 	, m_heightPixels(iHeightPixels)
-	, m_frameSize( iFrameSizeBytes )
 {
 
 }
@@ -163,7 +163,7 @@ GSLAFile::GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes )
 GSLAFile::~GSLAFile()
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;
@@ -175,7 +175,7 @@ GSLAFile::~GSLAFile()
 void GSLAFile::LoadFromFile(const char* pFilePath)
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;
@@ -190,7 +190,7 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
 	// Read the file into memory
 	FILE* pFile = nullptr;
 #ifdef _WIN32
-    errno_t err = fopen_s(&pFile, pFilePath, "wb");
+    errno_t err = fopen_s(&pFile, pFilePath, "rb");
 #else
     pFile = fopen(pFilePath, "rb");
     errno_t err = (pFile == nullptr) ? errno : 0;
@@ -290,7 +290,7 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 	// Initialize the Canvas with the first frame
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
-	for (int idx = 1; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 1; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		// Apply Changes to the Canvas
 		pData += DecompressFrame(pCanvas, pData, (unsigned char*) pHeader);
@@ -306,7 +306,7 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 //
 void GSLAFile::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 {
-	for (int idx = 0; idx < pFrameBytes.size(); ++idx)
+	for (unsigned int idx = 0; idx < pFrameBytes.size(); ++idx)
 	{
 		unsigned char* pPixels = new unsigned char[ m_frameSize ];
 		memcpy(pPixels, pFrameBytes[ idx ], m_frameSize );
@@ -318,7 +318,7 @@ void GSLAFile::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 //
 // Compress / Serialize a new GSLA File
 //
-void GSLAFile::SaveToFile(const char* pFilenamePath)
+void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 {
 	// We're not going to even try encoding an empty file
 	if (m_pC1PixelMaps.size() < 1)
@@ -416,9 +416,12 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
 	// Let's encode some frames buddy
-	for (int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
+	for (unsigned int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
 	{
-		printf("Save Frame %d\n", frameIndex+1);
+		if (bVerbose)
+		{
+			printf("Save Frame %d\n", frameIndex + 1);
+		}
 
 		// I don't want random data in the bank gaps, so initialize this
 		// buffer with zero
@@ -433,7 +436,10 @@ void GSLAFile::SaveToFile(const char* pFilenamePath)
 		//{
 		//	printf("Canvas is not correct - %d\n", canvasDiff);
 		//}
-		printf("frameSize = %d\n", frameSize);
+		if (bVerbose)
+		{
+			printf("frameSize = %d\n", frameSize);
+		}
 
 
 		for (int frameIndex = 0; frameIndex < frameSize; ++frameIndex)

@@ -14,13 +14,15 @@
 //------------------------------------------------------------------------------
 static void helpText()
 {
-	printf("GSLA - v1.0\n");
+	printf("GSLA - v1.01\n");
 	printf("--------------\n");
 	printf("GS Lzb Animation Creation Tool\n");
-	printf("\n");
-	printf("\ngsla [options] <input_file> <outfile>\n");
-	printf("\n\n There are no [options] yet\n");
 	printf("Converts from C2 to GSLA\n");
+	printf("\n");
+	printf("gsla [options] <input_file> <outfile>\n");
+	printf("-f<fps>    | Set the intended fps [*60,30,20,15,12,10,6,5,1]\n");
+	printf("-v         | Verbose\n");
+	printf("* indicates default setting\n");
 
 	exit(-1);
 }
@@ -60,7 +62,8 @@ int main(int argc, char* argv[])
 {
 	char* pInfilePath  = nullptr;
 	char* pOutfilePath = nullptr;
-
+	int encodingFps = 60;
+	bool bVerbose = false;
 
 	// index 0 is the executable name
 
@@ -74,6 +77,38 @@ int main(int argc, char* argv[])
 		{
 			// Parse as an option
 			// Currently I have no options, so I'll just skip
+			switch (arg[1])
+			{
+			case 'f':
+			case 'F':	// set fps
+				{
+					#ifdef _WIN32
+					sscanf_s(&arg[2], "%d", &encodingFps);
+					#else
+					sscanf(&arg[2], "%d", &encodingFps);
+					#endif
+
+					if ((encodingFps < 1) || (encodingFps > 60))
+					{
+						printf("Invalide Encoding FPS: %d\n", encodingFps);
+						helpText();
+					}
+
+					printf("Requested Encoding Speed = %dFPS\n", encodingFps);
+
+				}
+				break;
+
+			case 'v':
+			case 'V':  // verbose
+				bVerbose = true;
+				break;
+
+			default:
+				printf("Unknown Option: %s\n", arg);
+				helpText();
+				break;
+			}
 		}
 		else if (nullptr == pInfilePath)
 		{
@@ -117,31 +152,66 @@ int main(int argc, char* argv[])
 
 			if (pOutfilePath)
 			{
-				const std::vector<unsigned char*>& c1Datas = c2data.GetPixelMaps();
+				int frameCountMultiplier = 60 / encodingFps;
 
-				printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
-
-				GSLAFile anim(320,200, 0x8000);
-
-				anim.AddImages(c1Datas);
-				
-				anim.SaveToFile(pOutfilePath);
-
-				#if 1
+				if (encodingFps)
 				{
-					// Verify the conversion is good
-					// Load the file back in
-					GSLAFile verify(pOutfilePath);
+					const std::vector<unsigned char*>& c1DataOriginal = c2data.GetPixelMaps();
+					std::vector<unsigned char*> c1Datas;
 
-					const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
-
-					for (int idx = 0; idx < frames.size(); ++idx)
+					if (frameCountMultiplier > 1)
 					{
-						int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
-						printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
+						printf("Encoding Speed %dFPS / FrameCount Multiplier = %d\n", encodingFps, frameCountMultiplier);
+						printf("C2 with %d frames becomes %d frames\n", c2data.GetFrameCount(), c2data.GetFrameCount() * frameCountMultiplier);
 					}
+
+					// quick copy the c1Data, add extra frames to compensate for requested framerate
+					for (unsigned int frameIndex = 0; frameIndex < c1DataOriginal.size(); ++frameIndex)
+					{
+						for (int multiplier = 0; multiplier < frameCountMultiplier; ++multiplier)
+						{
+							c1Datas.push_back(c1DataOriginal[frameIndex]);
+						}
+					}
+
+
+					printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
+
+					GSLAFile anim(320,200, 0x8000);
+
+					anim.AddImages(c1Datas);
+
+					anim.SaveToFile(pOutfilePath, bVerbose);
+
+					bool bSuccess = true;
+					{
+						// Verify the conversion is good
+						// Load the file back in
+						GSLAFile verify(pOutfilePath);
+
+						const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
+
+						for (unsigned int idx = 0; idx < frames.size(); ++idx)
+						{
+							int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
+							if (bVerbose)
+							{
+								printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
+							}
+							else if (result)
+							{
+								printf("Verify Frame %d - Failed\n", idx);
+							}
+
+							if (result)
+							{
+								bSuccess = false;
+							}
+						}
+					}
+
+					printf("%s\n", bSuccess ? "Success" : "Failed");
 				}
-				#endif
 			}
 		}
 

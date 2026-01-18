@@ -117,7 +117,7 @@ public:
 	// Creation
 	GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes);
 	void AddImages( const std::vector<unsigned char*>& pFrameBytes );
-	void SaveToFile(const char* pFilenamePath);
+	void SaveToFile(const char* pFilenamePath, bool bVerbose = false);
 
 	// Retrieval
 	void LoadFromFile(const char* pFilePath);
