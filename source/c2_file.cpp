@@ -35,7 +35,7 @@ C2File::C2File(const char *pFilePath)
 C2File::~C2File()
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;
@@ -47,7 +47,7 @@ C2File::~C2File()
 void C2File::LoadFromFile(const char* pFilePath)
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;

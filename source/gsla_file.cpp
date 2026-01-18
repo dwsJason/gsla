@@ -151,9 +151,9 @@ GSLAFile::GSLAFile(const char *pFilePath)
 //------------------------------------------------------------------------------
 
 GSLAFile::GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes )
-	: m_widthPixels(iWidthPixels)
+	: m_frameSize( iFrameSizeBytes )
+	, m_widthPixels(iWidthPixels)
 	, m_heightPixels(iHeightPixels)
-	, m_frameSize( iFrameSizeBytes )
 {
 
 }
@@ -163,7 +163,7 @@ GSLAFile::GSLAFile(int iWidthPixels, int iHeightPixels, int iFrameSizeBytes )
 GSLAFile::~GSLAFile()
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;
@@ -175,7 +175,7 @@ GSLAFile::~GSLAFile()
 void GSLAFile::LoadFromFile(const char* pFilePath)
 {
 	// Free Up the memory
-	for (int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 0; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		delete[] m_pC1PixelMaps[idx];
 		m_pC1PixelMaps[ idx ] = nullptr;
@@ -290,7 +290,7 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 	// Initialize the Canvas with the first frame
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
-	for (int idx = 1; idx < m_pC1PixelMaps.size(); ++idx)
+	for (unsigned int idx = 1; idx < m_pC1PixelMaps.size(); ++idx)
 	{
 		// Apply Changes to the Canvas
 		pData += DecompressFrame(pCanvas, pData, (unsigned char*) pHeader);
@@ -306,7 +306,7 @@ void GSLAFile::UnpackAnimation(GSLA_ANIM* pANIM, GSLA_Header* pHeader)
 //
 void GSLAFile::AddImages( const std::vector<unsigned char*>& pFrameBytes )
 {
-	for (int idx = 0; idx < pFrameBytes.size(); ++idx)
+	for (unsigned int idx = 0; idx < pFrameBytes.size(); ++idx)
 	{
 		unsigned char* pPixels = new unsigned char[ m_frameSize ];
 		memcpy(pPixels, pFrameBytes[ idx ], m_frameSize );
@@ -416,7 +416,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
 	// Let's encode some frames buddy
-	for (int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
+	for (unsigned int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
 	{
 		if (bVerbose)
 		{

@@ -703,13 +703,13 @@ static int EmitReference(unsigned char *pDest, int dictionaryOffset, DataString&
 // Std C memcpy seems to be stopping the copy from happening, when I overlap
 // the buffer to get a pattern run copy (overlapped buffers)
 //
-static void my_memcpy(u8* pDest, u8* pSrc, int length)
-{
-	while (length-- > 0)
-	{
-		*pDest++ = *pSrc++;
-	}
-}
+//static void my_memcpy(u8* pDest, u8* pSrc, int length)
+//{
+//	while (length-- > 0)
+//	{
+//		*pDest++ = *pSrc++;
+//	}
+//}
 
 //------------------------------------------------------------------------------
 //

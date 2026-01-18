@@ -82,7 +82,11 @@ int main(int argc, char* argv[])
 			case 'f':
 			case 'F':	// set fps
 				{
+					#ifdef _WIN32
 					sscanf_s(&arg[2], "%d", &encodingFps);
+					#else
+					sscanf(&arg[2], "%d", &encodingFps);
+					#endif
 
 					if ((encodingFps < 1) || (encodingFps > 60))
 					{
@@ -162,7 +166,7 @@ int main(int argc, char* argv[])
 					}
 
 					// quick copy the c1Data, add extra frames to compensate for requested framerate
-					for (int frameIndex = 0; frameIndex < c1DataOriginal.size(); ++frameIndex)
+					for (unsigned int frameIndex = 0; frameIndex < c1DataOriginal.size(); ++frameIndex)
 					{
 						for (int multiplier = 0; multiplier < frameCountMultiplier; ++multiplier)
 						{
@@ -187,7 +191,7 @@ int main(int argc, char* argv[])
 
 						const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
 
-						for (int idx = 0; idx < frames.size(); ++idx)
+						for (unsigned int idx = 0; idx < frames.size(); ++idx)
 						{
 							int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
 							if (bVerbose)
@@ -196,7 +200,7 @@ int main(int argc, char* argv[])
 							}
 							else if (result)
 							{
-								printf("Verify Frame %d - Failed\n");
+								printf("Verify Frame %d - Failed\n", idx);
 							}
 
 							if (result)
