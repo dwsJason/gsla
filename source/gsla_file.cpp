@@ -328,6 +328,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	// serialize to memory, then save that to a file
 	std::vector<unsigned char> bytes;
+	// Worst-case sizing: header + per-frame compressed bound (~ 2*frame_size).
+	// One reserve up front avoids ~hundreds of vector reallocs across frames.
+	bytes.reserve(sizeof(GSLA_Header) + (size_t)m_frameSize * (m_pC1PixelMaps.size() + 2) * 2);
 
 	//--------------------------------------------------------------------------
 	// Add the header
@@ -396,10 +399,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	printf("frameSize = %d (old=%d new=%d)\n", compressedSize, oldSize, newSize);
 
-	for (int compressedIndex = 0; compressedIndex < compressedSize; ++compressedIndex)
-	{
-		bytes.push_back(pWorkBuffer[ compressedIndex ]);
-	}
+	bytes.insert(bytes.end(), pWorkBuffer, pWorkBuffer + compressedSize);
 
 	// Insert EOF/ End of Animation Done opcode
 	bytes.push_back( 0x06 );
@@ -428,56 +428,12 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	// Initialize the Canvas with the initial frame (we alread exported this)
 	unsigned char *pCanvas = new unsigned char[ m_frameSize ];
-	unsigned char *pCanvasBackup = new unsigned char[ m_frameSize ];
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
-	// Per-frame gap-merge bake-off: the optimum gap-merge threshold is
-	// content-dependent (denser change → smaller threshold).  Trying a few
-	// values per frame and keeping the smallest output costs encoder time but
-	// is the only way to get this right without a model.  4 trials per frame
-	// is enough to cover the range from "lots of small changes" to "few large
-	// changes".
-	const int kGapTrials[] = { 3, 16, 64, 128, 256 };
-	const int kNumGapTrials = (int)(sizeof(kGapTrials) / sizeof(kGapTrials[0]));
-
-	auto bakeoffCompress = [&](unsigned char* pSource, size_t bytesSizeAtCall) -> int
-	{
-		// Fast path: when the frame matches the canvas exactly, every gap
-		// trial produces the same minimal output (a bank-skip dance plus the
-		// EOF opcode).  Skip the bake-off — one call is enough, and it gets
-		// the bank-skip handling right.
-		if (memcmp(pSource, pCanvas, m_frameSize) == 0)
-		{
-			return LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
-			                     pWorkBuffer - bytesSizeAtCall,
-			                     pCanvas, m_frameSize, 3);
-		}
-
-		// Snapshot canvas so each trial starts from the same state.
-		memcpy(pCanvasBackup, pCanvas, m_frameSize);
-
-		int bestSize = -1;
-		int bestGap  = kGapTrials[0];
-		for (int t = 0; t < kNumGapTrials; ++t)
-		{
-			memcpy(pCanvas, pCanvasBackup, m_frameSize);
-			int size = LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
-			                         pWorkBuffer - bytesSizeAtCall,
-			                         pCanvas, m_frameSize, kGapTrials[t]);
-			if (bestSize < 0 || size < bestSize)
-			{
-				bestSize = size;
-				bestGap  = kGapTrials[t];
-			}
-		}
-
-		// Re-run the winning gap so pCanvas is left in the correct state and
-		// pWorkBuffer holds the winning bitstream for the caller to copy.
-		memcpy(pCanvas, pCanvasBackup, m_frameSize);
-		return LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
-		                     pWorkBuffer - bytesSizeAtCall,
-		                     pCanvas, m_frameSize, bestGap);
-	};
+	// gapMergeThreshold of 256 was empirically best on falcon-new.gsla
+	// (within 0.8% of the per-frame optimum across {3,16,64,128,256}).
+	// Lower values (3, 16, 64) cost double-digit-percent on real animations.
+	const int kGapMergeThreshold = 256;
 
 	// Let's encode some frames buddy
 	for (unsigned int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
@@ -487,7 +443,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 			printf("Save Frame %d\n", frameIndex + 1);
 		}
 
-		int frameSize = bakeoffCompress(m_pC1PixelMaps[frameIndex], bytes.size());
+		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[frameIndex], m_frameSize,
+		                              pWorkBuffer - bytes.size(),
+		                              pCanvas, m_frameSize, kGapMergeThreshold);
 
 		if (bVerbose)
 		{
@@ -495,26 +453,21 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 		}
 
 
-		for (int frameIndex = 0; frameIndex < frameSize; ++frameIndex)
-		{
-			bytes.push_back(pWorkBuffer[ frameIndex ]);
-		}
+		bytes.insert(bytes.end(), pWorkBuffer, pWorkBuffer + frameSize);
 	}
 
 	// Add the RING Frame
 	printf("Save Ring Frame\n");
 
-	int ringSize = bakeoffCompress(m_pC1PixelMaps[0], bytes.size());
+	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[0], m_frameSize,
+	                             pWorkBuffer - bytes.size(),
+	                             pCanvas, m_frameSize, kGapMergeThreshold);
 
 	printf("Ring Size %d\n", ringSize);
 
-	for (int ringIndex = 0; ringIndex < ringSize; ++ringIndex)
-	{
-		bytes.push_back(pWorkBuffer[ ringIndex ]);
-	}
+	bytes.insert(bytes.end(), pWorkBuffer, pWorkBuffer + ringSize);
 
 	delete[] pCanvas; pCanvas = nullptr;
-	delete[] pCanvasBackup;
 
 	// Insert End of file/ End of Animation Done opcode
 	// -- There has to be room for this, or there wouldn't be room to insert

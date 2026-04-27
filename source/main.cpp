@@ -133,7 +133,64 @@ int main(int argc, char* argv[])
 	{
 		// See what we can do with the input file path
 		// could be a .gsla file, for a .c2 file, or maybe a series of .c1 files
-		if (endsWith(pInfilePath, ".c2") || endsWith(pInfilePath, "#c20000"))
+		if (endsWith(pInfilePath, ".gsla") && pOutfilePath)
+		{
+			// .gsla → .gsla re-encode: useful for benchmarking the encoder
+			// against an existing animation without needing the original .c2.
+			printf("Loading GSLA File %s\n", pInfilePath);
+			GSLAFile inAnim(pInfilePath);
+
+			const std::vector<unsigned char*>& srcFrames = inAnim.GetPixelMaps();
+			if (srcFrames.empty())
+			{
+				printf("GSLA File contained no frames.\n");
+				return -1;
+			}
+
+			// Snapshot source frames so the output verify can compare against
+			// the original pixels (the input GSLAFile owns srcFrames buffers
+			// and would also hand them to the new GSLAFile if reused directly).
+			int frameSize = inAnim.GetFrameSize();
+			std::vector<unsigned char*> c1Datas;
+			c1Datas.reserve(srcFrames.size());
+			for (size_t i = 0; i < srcFrames.size(); ++i)
+			{
+				unsigned char* p = new unsigned char[frameSize];
+				memcpy(p, srcFrames[i], frameSize);
+				c1Datas.push_back(p);
+			}
+
+			printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
+
+			GSLAFile anim(inAnim.GetWidth(), inAnim.GetHeight(), frameSize);
+			anim.AddImages(c1Datas);
+			anim.SaveToFile(pOutfilePath, bVerbose);
+
+			// Verify
+			bool bSuccess = true;
+			{
+				GSLAFile verify(pOutfilePath);
+				const std::vector<unsigned char*>& outFrames = verify.GetPixelMaps();
+				for (unsigned int idx = 0; idx < outFrames.size(); ++idx)
+				{
+					int result = memcmp(c1Datas[idx % c1Datas.size()], outFrames[idx], verify.GetFrameSize());
+					if (bVerbose)
+					{
+						printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
+					}
+					else if (result)
+					{
+						printf("Verify Frame %d - Failed\n", idx);
+					}
+					if (result) bSuccess = false;
+				}
+			}
+
+			for (size_t i = 0; i < c1Datas.size(); ++i) delete[] c1Datas[i];
+
+			printf("%s\n", bSuccess ? "Success" : "Failed");
+		}
+		else if (endsWith(pInfilePath, ".c2") || endsWith(pInfilePath, "#c20000"))
 		{
 			// It's a C2 file
 

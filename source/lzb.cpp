@@ -42,6 +42,137 @@ struct DataString {
 	unsigned char *pData;
 };
 
+//------------------------------------------------------------------------------
+// Hash chain match finder.
+//
+// 4-byte rolling hash → doubly-linked list of dictionary positions per bucket.
+// Replaces the prior O(D × M) brute-force scan in LongestMatch with O(chain × M).
+//
+// Doubly linked because variant 2 (LZBA) re-hashes positions when their bytes
+// change.  A singly-linked chain would lose entries on re-insertion (the old
+// chain becomes disconnected past the moved node), causing missed matches.
+// O(1) remove-then-insert keeps both old and new buckets correct.
+//
+// One global state, reset at the start of each compressor invocation
+// (HashChainReset) and fed new/changed positions via HashChainInsertRange.
+//
+// Tuning:
+//   HASH_BITS   16   → 64K buckets, ~0.5 positions/bucket at 32K dict
+//   MAX_CHAIN 4096   → walk at most this many positions per query
+//   MIN_MATCH    4   → refs need length >=4 to win against literal concat;
+//                      shorter matches are useless and a 4-byte hash filters
+//                      out the catastrophic "00 00 00" bucket pile-up that a
+//                      3-byte hash creates in image data.
+#define HASH_BITS  16
+#define HASH_SIZE  (1 << HASH_BITS)
+#define HASH_MASK  (HASH_SIZE - 1)
+#define MAX_CHAIN  4096
+#define MIN_MATCH  4
+
+static int s_hashHead  [HASH_SIZE];
+static int s_hashNext  [MAX_DICTIONARY_SIZE];   // next  (older) position in bucket, -1 if tail
+static int s_hashPrevDL[MAX_DICTIONARY_SIZE];   // prev  (newer) position in bucket, -1 if head
+static int s_hashBucket[MAX_DICTIONARY_SIZE];   // which bucket position is in, -1 if none
+
+static inline unsigned int Hash4(const unsigned char* p)
+{
+	unsigned int v = (unsigned int)p[0]
+	               | ((unsigned int)p[1] << 8)
+	               | ((unsigned int)p[2] << 16)
+	               | ((unsigned int)p[3] << 24);
+	return (v * 2654435761U) >> (32 - HASH_BITS);
+}
+
+static void HashChainReset()
+{
+	for (int i = 0; i < HASH_SIZE; ++i) s_hashHead[i] = -1;
+	for (int i = 0; i < MAX_DICTIONARY_SIZE; ++i) s_hashBucket[i] = -1;
+}
+
+static inline void HashChainRemove(int p)
+{
+	int b = s_hashBucket[p];
+	if (b < 0) return;
+	int prev = s_hashPrevDL[p];
+	int next = s_hashNext[p];
+	if (prev >= 0) s_hashNext[prev] = next;
+	else           s_hashHead[b]    = next;
+	if (next >= 0) s_hashPrevDL[next] = prev;
+	s_hashBucket[p] = -1;
+}
+
+// Insert positions [start, endExcl) into the chain, hashing the 4-byte window
+// at each.  If a position was already in some bucket (from a prior insertion),
+// remove it first so it ends up in exactly one bucket.  Skip positions that
+// are already at the head of the correct bucket (already hashed identically).
+// Caller is responsible for ensuring p+4 <= dictionary capacity for every p.
+static void HashChainInsertRange(int start, int endExcl, const unsigned char* base)
+{
+	if (start < 0) start = 0;
+	for (int p = start; p < endExcl; ++p)
+	{
+		int h = (int)Hash4(base + p);
+		if (s_hashBucket[p] == h) continue; // already correct, nothing changed
+		HashChainRemove(p);
+		int oldHead = s_hashHead[h];
+		s_hashNext  [p] = oldHead;
+		s_hashPrevDL[p] = -1;
+		if (oldHead >= 0) s_hashPrevDL[oldHead] = p;
+		s_hashHead  [h] = p;
+		s_hashBucket[p] = h;
+	}
+}
+
+// Find the longest match for source[0..sourceSize) starting at any position
+// in the chain that lies in [posLow, posHighExcl).  Reads from base[pos..pos+L)
+// where L is bounded by both sourceSize and (dictReadLimitExcl - pos).
+static DataString HashChainLongestMatch(
+	const unsigned char* source, int sourceSize,
+	const unsigned char* base,
+	int posLow, int posHighExcl,
+	int dictReadLimitExcl,
+	int minLenInclusive)
+{
+	DataString result;
+	result.pData = nullptr;
+	result.size  = 0;
+
+	if (sourceSize < MIN_MATCH) return result;
+	if (posLow >= posHighExcl)  return result;
+
+	unsigned int h = Hash4(source);
+	int pos = s_hashHead[h];
+	int chainCount = 0;
+	int bestLen = (minLenInclusive > 0) ? (minLenInclusive - 1) : 0; // strictly greater
+
+	while (pos >= 0 && chainCount < MAX_CHAIN)
+	{
+		if (pos >= posLow && pos < posHighExcl)
+		{
+			int maxExtend = sourceSize;
+			int dictAvail = dictReadLimitExcl - pos;
+			if (dictAvail < maxExtend) maxExtend = dictAvail;
+
+			// Quick reject: even the best possible extension can't beat current best.
+			if (maxExtend > bestLen)
+			{
+				int len = 0;
+				while (len < maxExtend && source[len] == base[pos + len]) ++len;
+				if (len > bestLen)
+				{
+					bestLen = len;
+					result.pData = (unsigned char*)(base + pos);
+					result.size  = len;
+				}
+			}
+		}
+		pos = s_hashNext[pos];
+		++chainCount;
+	}
+
+	return result;
+}
+
 static int AddDictionary(const DataString& data, int dictionarySize);
 static int EmitLiteral(unsigned char *pDest, DataString& data);
 static int ConcatLiteral(unsigned char *pDest, DataString& data);
@@ -81,6 +212,11 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 	dictionaryData.pData = pSource;
 	dictionaryData.size = 0;
 
+	// Reset the hash chain for this encode.  Variant 1: the dictionary grows
+	// monotonically as we emit; HashChainInsertRange below extends the chain
+	// each iteration with newly-formed 3-byte windows.
+	HashChainReset();
+
 	// dumb last emit is a literal stuff
 	bool bLastEmitIsLiteral = false;
 	unsigned char* pLastLiteralDest = nullptr;
@@ -119,7 +255,13 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 		sourceData.pData += candidateData.size;
 		sourceData.size  -= candidateData.size;
 
+		int oldDictSize = dictionaryData.size;
 		dictionaryData.size = AddDictionary(candidateData, dictionaryData.size);
+
+		// Newly-formed 4-byte windows: positions p where p+4 was previously
+		// > oldDictSize and is now <= dictionaryData.size.  Range is
+		// [oldDictSize-3, dictionaryData.size-3) clamped to [0, ...).
+		HashChainInsertRange(oldDictSize - 3, dictionaryData.size - 3, dictionaryData.pData);
 
 		// A 4-byte ref costs 4 output bytes; a 4-byte literal CONCATENATED onto
 		// a previous literal opcode also costs 4 (no opcode overhead, just data).
@@ -357,46 +499,19 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 			}
 		}
 
-		// As an optimization
-		int dictionarySize = dictionary.size; // - 1;	// This last string has already been checked by, the
-												    // run-length matcher above
+		// Hash-chain replacement for the prior O(D × M) brute-force scan.
+		// Pattern-run loop above already covers tail-of-dictionary repeats;
+		// hash chain finds matches anywhere else in [0, dictionary.size).
+		DataString chainHit = HashChainLongestMatch(
+			data.pData, data.size,
+			dictionary.pData,
+			0, dictionary.size,            // candidate position range
+			dictionary.size,               // read bound
+			result.size + 1);              // require strictly better than current
 
-		// As the size grows, we're missing potential matches in here
-		// I think the best way to counter this is to attempt somthing
-		// like KMP
-
-		if (dictionarySize > candidate.size)
+		if (chainHit.size > result.size)
 		{
-			// Check the dictionary for a match, brute force.
-			// Scan the entire dictionary so we find the truly longest match.
-			// candidate.size only ratchets up via the inner-loop guard, so
-			// later positions can extend the match further than earlier ones.
-			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
-			{
-				int sizeAvailable = dictionarySize - dictionaryIndex;
-
-				if (sizeAvailable > data.size) sizeAvailable = data.size;
-
-				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
-				{
-					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
-					{
-						if (dataIndex >= candidate.size)
-						{
-							candidate.pData = dictionary.pData + dictionaryIndex;
-							candidate.size = dataIndex + 1;
-						}
-						continue;
-					}
-
-					break;
-				}
-
-				if (candidate.size > result.size)
-				{
-					result = candidate;
-				}
-			}
+			result = chainHit;
 		}
 	}
 
@@ -454,85 +569,31 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 		if (result.size == data.size)
 			return result;
 
-		// This will keep us from finding matches that we can't use
-
-		int dictionarySize = cursorPosition;
-
-		// As the size grows, we're missing potential matches in here
-		// I think the best way to counter this is to attempt somthing
-		// like KMP
-
-		if (dictionarySize > candidate.size)
-		{
-			// Check the dictionary for a match, brute force.
-			// Scan the entire dictionary so we find the truly longest match.
-			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
-			{
-				int sizeAvailable = dictionarySize - dictionaryIndex;
-
-				if (sizeAvailable > data.size) sizeAvailable = data.size;
-
-				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
-				{
-					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
-					{
-						if (dataIndex >= candidate.size)
-						{
-							candidate.pData = dictionary.pData + dictionaryIndex;
-							candidate.size = dataIndex + 1;
-						}
-						continue;
-					}
-
-					break;
-				}
-
-				if (candidate.size > result.size)
-				{
-					result = candidate;
-				}
-			}
-		}
+		// Pre-cursor: candidates in [0, cursorPosition); reads bounded by
+		// cursorPosition (positions there hold this-frame emitted bytes).
+		DataString preHit = HashChainLongestMatch(
+			data.pData, data.size,
+			dictionary.pData,
+			0, cursorPosition,
+			cursorPosition,
+			result.size + 1);
+		if (preHit.size > result.size) result = preHit;
 
 		// Not getting better than this
 		if (result.size == data.size)
 			return result;
 
-
-		#if 1
-		// Look for matches beyond the cursor
-		dictionarySize = dictionary.size;
-
-		if ((dictionarySize-cursorPosition) > candidate.size)
-		{
-			for (int dictionaryIndex = cursorPosition+1; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
-			{
-				int sizeAvailable = dictionarySize - dictionaryIndex;
-
-				if (sizeAvailable > data.size) sizeAvailable = data.size;
-
-				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
-				{
-					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
-					{
-						if (dataIndex >= candidate.size)
-						{
-							candidate.pData = dictionary.pData + dictionaryIndex;
-							candidate.size = dataIndex + 1;
-						}
-						continue;
-					}
-
-					break;
-				}
-
-				if (candidate.size > result.size)
-				{
-					result = candidate;
-				}
-			}
-		}
-		#endif
+		// Post-cursor: candidates in (cursorPosition, dictionary.size); reads
+		// bounded by dictionary.size (positions there hold prior-frame bytes,
+		// not yet overwritten this frame, still valid as ref source per the
+		// format).
+		DataString postHit = HashChainLongestMatch(
+			data.pData, data.size,
+			dictionary.pData,
+			cursorPosition + 1, dictionary.size,
+			dictionary.size,
+			result.size + 1);
+		if (postHit.size > result.size) result = postHit;
 	}
 
 	return result;
@@ -847,6 +908,17 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 	dictionaryData.pData = pDictionary;
 	dictionaryData.size = dictionarySize;
 
+	// Variant 2: pre-populate the hash chain over the entire canvas (all
+	// positions hold prior-frame bytes that may serve as ref source).  As the
+	// cursor advances and AddDictionary overwrites bytes, we re-insert the
+	// affected positions; old chain entries become orphans but the byte-by-byte
+	// compare in HashChainLongestMatch keeps results correct.
+	HashChainReset();
+	if (dictionarySize >= MIN_MATCH)
+	{
+		HashChainInsertRange(0, dictionarySize - 3, pDictionary);
+	}
+
 	// dumb last emit is a literal stuff
 	bool bLastEmitIsLiteral = false;
 	unsigned char* pLastLiteralDest = nullptr;
@@ -993,8 +1065,17 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				sourceData.size  -= candidateData.size;
 
 				// Modify the dictionary
+				int oldCursor = cursorPosition;
 				cursorPosition = AddDictionary(candidateData, cursorPosition);
 				lastEmittedCursorPosition = cursorPosition;
+
+				// Re-insert hash entries for positions whose 4-byte window
+				// touches the modified range [oldCursor, cursorPosition).
+				// That's start positions [oldCursor-3, cursorPosition-1],
+				// bounded so p+4 <= dictionary capacity (frame size).
+				int reinsertEnd = cursorPosition;
+				if (reinsertEnd > dictionaryData.size - 3) reinsertEnd = dictionaryData.size - 3;
+				HashChainInsertRange(oldCursor - 3, reinsertEnd, pDictionary);
 
 				// A 4-byte ref costs 4 output bytes; a 4-byte literal CONCATENATED
 				// onto a previous literal also costs 4. Emitting the ref ends the
