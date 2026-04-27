@@ -372,14 +372,29 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	// than the original data, I think if that happens, the image was probably
 	// designed to break this, anyway, give double theoretical max
 	unsigned char* pWorkBuffer = new unsigned char[ m_frameSize * 2 ];
+	unsigned char* pAltBuffer  = new unsigned char[ m_frameSize * 2 ];
 
 	unsigned char* pInitialFrame = m_pC1PixelMaps[ 0 ];
 
-	// We're not worried about bank wrap on the first frame, and we don't have a pre-populated
-	// dictionary - Also use the best compression we can get here
-	int compressedSize = Old_LZB_Compress(pWorkBuffer, pInitialFrame, m_frameSize);
+	// Bake-off: Old_LZB_Compress and LZB_Compress are different greedy strategies
+	// with different bias.  Run both on the INIT frame and keep the smaller.
+	int oldSize = Old_LZB_Compress(pAltBuffer,  pInitialFrame, m_frameSize);
+	int newSize = LZB_Compress    (pWorkBuffer, pInitialFrame, m_frameSize);
+	int compressedSize;
+	if (newSize <= oldSize)
+	{
+		compressedSize = newSize;
+	}
+	else
+	{
+		compressedSize = oldSize;
+		// Use the alternate buffer's data
+		unsigned char* tmp = pWorkBuffer;
+		pWorkBuffer = pAltBuffer;
+		pAltBuffer = tmp;
+	}
 
-	printf("frameSize = %d\n", compressedSize);
+	printf("frameSize = %d (old=%d new=%d)\n", compressedSize, oldSize, newSize);
 
 	for (int compressedIndex = 0; compressedIndex < compressedSize; ++compressedIndex)
 	{
@@ -413,7 +428,56 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	// Initialize the Canvas with the initial frame (we alread exported this)
 	unsigned char *pCanvas = new unsigned char[ m_frameSize ];
+	unsigned char *pCanvasBackup = new unsigned char[ m_frameSize ];
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
+
+	// Per-frame gap-merge bake-off: the optimum gap-merge threshold is
+	// content-dependent (denser change → smaller threshold).  Trying a few
+	// values per frame and keeping the smallest output costs encoder time but
+	// is the only way to get this right without a model.  4 trials per frame
+	// is enough to cover the range from "lots of small changes" to "few large
+	// changes".
+	const int kGapTrials[] = { 3, 16, 64, 128, 256 };
+	const int kNumGapTrials = (int)(sizeof(kGapTrials) / sizeof(kGapTrials[0]));
+
+	auto bakeoffCompress = [&](unsigned char* pSource, size_t bytesSizeAtCall) -> int
+	{
+		// Fast path: when the frame matches the canvas exactly, every gap
+		// trial produces the same minimal output (a bank-skip dance plus the
+		// EOF opcode).  Skip the bake-off — one call is enough, and it gets
+		// the bank-skip handling right.
+		if (memcmp(pSource, pCanvas, m_frameSize) == 0)
+		{
+			return LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
+			                     pWorkBuffer - bytesSizeAtCall,
+			                     pCanvas, m_frameSize, 3);
+		}
+
+		// Snapshot canvas so each trial starts from the same state.
+		memcpy(pCanvasBackup, pCanvas, m_frameSize);
+
+		int bestSize = -1;
+		int bestGap  = kGapTrials[0];
+		for (int t = 0; t < kNumGapTrials; ++t)
+		{
+			memcpy(pCanvas, pCanvasBackup, m_frameSize);
+			int size = LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
+			                         pWorkBuffer - bytesSizeAtCall,
+			                         pCanvas, m_frameSize, kGapTrials[t]);
+			if (bestSize < 0 || size < bestSize)
+			{
+				bestSize = size;
+				bestGap  = kGapTrials[t];
+			}
+		}
+
+		// Re-run the winning gap so pCanvas is left in the correct state and
+		// pWorkBuffer holds the winning bitstream for the caller to copy.
+		memcpy(pCanvas, pCanvasBackup, m_frameSize);
+		return LZBA_Compress(pWorkBuffer, pSource, m_frameSize,
+		                     pWorkBuffer - bytesSizeAtCall,
+		                     pCanvas, m_frameSize, bestGap);
+	};
 
 	// Let's encode some frames buddy
 	for (unsigned int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
@@ -423,19 +487,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 			printf("Save Frame %d\n", frameIndex + 1);
 		}
 
-		// I don't want random data in the bank gaps, so initialize this
-		// buffer with zero
-		//memset(pWorkBuffer, 0xEA, m_frameSize * 2);
+		int frameSize = bakeoffCompress(m_pC1PixelMaps[frameIndex], bytes.size());
 
-		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ frameIndex ],
-									  m_frameSize, pWorkBuffer-bytes.size(),
-									  pCanvas, m_frameSize );
-
-		//int canvasDiff = memcmp(pCanvas, m_pC1PixelMaps[ frameIndex], m_frameSize);
-		//if (canvasDiff)
-		//{
-		//	printf("Canvas is not correct - %d\n", canvasDiff);
-		//}
 		if (bVerbose)
 		{
 			printf("frameSize = %d\n", frameSize);
@@ -449,13 +502,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	}
 
 	// Add the RING Frame
-	//memset(pWorkBuffer, 0xAB, m_frameSize * 2);
-
 	printf("Save Ring Frame\n");
 
-	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[ 0 ],
-								  m_frameSize, pWorkBuffer-bytes.size(),
-								  pCanvas, m_frameSize  );
+	int ringSize = bakeoffCompress(m_pC1PixelMaps[0], bytes.size());
 
 	printf("Ring Size %d\n", ringSize);
 
@@ -465,6 +514,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	}
 
 	delete[] pCanvas; pCanvas = nullptr;
+	delete[] pCanvasBackup;
 
 	// Insert End of file/ End of Animation Done opcode
 	// -- There has to be room for this, or there wouldn't be room to insert
@@ -482,6 +532,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	// Try not to leak memory, even though we probably do
 	delete[] pWorkBuffer;
+	delete[] pAltBuffer;
 
 	//--------------------------------------------------------------------------
 	// Create the file and write it

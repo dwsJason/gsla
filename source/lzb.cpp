@@ -52,6 +52,13 @@ static int DictionaryMatch(const DataString& data, int dictionarySize);
 static DataString LongestMatch(const DataString& data, const DataString& dictionary);
 static DataString LongestMatch(const DataString& data, const DataString& dictionary, int cursorPosition);
 
+// Read the encoded length of an existing literal opcode (in bytes of data).
+static inline int ExistingLiteralLength(const unsigned char* pLiteralOpcode)
+{
+	int opcode = pLiteralOpcode[0] | ((pLiteralOpcode[1] & 0x7F) << 8);
+	return (opcode >> 1) + 1;
+}
+
 //
 //  New Version, still Brute Force, but not as many times
 //
@@ -90,26 +97,53 @@ int LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize)
 			candidateData.pData = sourceData.pData;
 		}
 
+		// Lazy matching: if this would be a ref, peek one byte ahead.  If a
+		// strictly longer match starts at p+1, prefer emitting p as a literal
+		// and let the next iteration take the longer ref.  The 4-byte cost of
+		// the literal byte (1 in concat, ≤2 fresh) is dwarfed by the saving
+		// from a longer ref over a shorter one in the typical case.
+		if (candidateData.size > 3 && sourceData.size > 1)
+		{
+			DataString peekSource;
+			peekSource.pData = sourceData.pData + 1;
+			peekSource.size  = sourceData.size  - 1;
+			DataString peek = LongestMatch(peekSource, dictionaryData);
+			if (peek.size > candidateData.size)
+			{
+				candidateData.size = 1;
+				candidateData.pData = sourceData.pData;
+			}
+		}
+
 		// Adjust source stream
 		sourceData.pData += candidateData.size;
 		sourceData.size  -= candidateData.size;
 
 		dictionaryData.size = AddDictionary(candidateData, dictionaryData.size);
 
-		if (candidateData.size > 3)
+		// A 4-byte ref costs 4 output bytes; a 4-byte literal CONCATENATED onto
+		// a previous literal opcode also costs 4 (no opcode overhead, just data).
+		// Emitting the ref ends the literal stream, so the next non-ref emission
+		// pays a fresh +2 opcode. Therefore prefer concat over ref when sizes tie.
+		bool emitAsRef = (candidateData.size > 3) &&
+		                 !(bLastEmitIsLiteral && candidateData.size == 4);
+
+		if (emitAsRef)
 		{
 			// Emit a dictionary reference
 			pDest += (int)EmitReference(pDest, (int)(candidateData.pData - dictionaryData.pData), candidateData);
 			bLastEmitIsLiteral = false;
 		}
-		else if (bLastEmitIsLiteral)
+		else if (bLastEmitIsLiteral &&
+		         ExistingLiteralLength(pLastLiteralDest) + candidateData.size <= MAX_STRING_SIZE)
 		{
 			// Concatenate this literal onto the previous literal
 			pDest += ConcatLiteral(pLastLiteralDest, candidateData);
 		}
 		else
 		{
-			// Emit a new literal
+			// Emit a new literal (also the fallback when concat would overflow
+			// the 15-bit length field).
 			pLastLiteralDest = pDest;
 			bLastEmitIsLiteral = true;
 			pDest += EmitLiteral(pDest, candidateData);
@@ -333,14 +367,16 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 
 		if (dictionarySize > candidate.size)
 		{
-			// Check the dictionary for a match, brute force
+			// Check the dictionary for a match, brute force.
+			// Scan the entire dictionary so we find the truly longest match.
+			// candidate.size only ratchets up via the inner-loop guard, so
+			// later positions can extend the match further than earlier ones.
 			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
 			{
 				int sizeAvailable = dictionarySize - dictionaryIndex;
 
 				if (sizeAvailable > data.size) sizeAvailable = data.size;
 
-				// this could index off the end of the dictionary!!! FIX ME
 				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
 				{
 					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
@@ -359,8 +395,6 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 				if (candidate.size > result.size)
 				{
 					result = candidate;
-					//dictionaryIndex = -1;
-					break;
 				}
 			}
 		}
@@ -430,14 +464,14 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 
 		if (dictionarySize > candidate.size)
 		{
-			// Check the dictionary for a match, brute force
+			// Check the dictionary for a match, brute force.
+			// Scan the entire dictionary so we find the truly longest match.
 			for (int dictionaryIndex = 0; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
 			{
 				int sizeAvailable = dictionarySize - dictionaryIndex;
 
 				if (sizeAvailable > data.size) sizeAvailable = data.size;
 
-				// this could index off the end of the dictionary!!! FIX ME
 				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
 				{
 					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
@@ -456,8 +490,6 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 				if (candidate.size > result.size)
 				{
 					result = candidate;
-					//dictionaryIndex = -1;
-					break;
 				}
 			}
 		}
@@ -473,14 +505,12 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 
 		if ((dictionarySize-cursorPosition) > candidate.size)
 		{
-			// Check the dictionary for a match, brute force
-			for (int dictionaryIndex = cursorPosition+3; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
+			for (int dictionaryIndex = cursorPosition+1; dictionaryIndex <= (dictionarySize-candidate.size); ++dictionaryIndex)
 			{
 				int sizeAvailable = dictionarySize - dictionaryIndex;
 
 				if (sizeAvailable > data.size) sizeAvailable = data.size;
 
-				// this could index off the end of the dictionary!!! FIX ME
 				for (int dataIndex = 0; dataIndex < sizeAvailable; ++dataIndex)
 				{
 					if (data.pData[ dataIndex ] == dictionary.pData[ dictionaryIndex + dataIndex ])
@@ -499,7 +529,6 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 				if (candidate.size > result.size)
 				{
 					result = candidate;
-					break;
 				}
 			}
 		}
@@ -797,14 +826,11 @@ int CheckEmitSourceSkip(int checkSpace, unsigned char*& pDest, int space_left_in
 //
 int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  unsigned char* pDataStart, unsigned char* pDictionary,
-				  int dictionarySize)
+				  int dictionarySize, int gapMergeThreshold)
 {
 //	printf("LZBA Compress %d bytes\n", sourceSize);
 
 	pGlobalDictionary = pDictionary;
-
-	// Used for bank skip opcode emission
-	int bankOffset = (int)((pDest - pDataStart) & 0xFFFF);
 
 	// So we can track how big our compressed data ends up being
 	unsigned char *pOriginalDest = pDest;
@@ -867,7 +893,7 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				{
 					// if there's a small amount of matching data, let's include
 					// it in the clump (try and reduce opcode emissions)
-					if (gapCount >= 3)
+					if (gapCount >= gapMergeThreshold)
 						break;
 					gapCount++;
 				}
@@ -895,6 +921,37 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 			while (sourceData.size > 0)
 			{
+				// Inline skip detection: when the gap-merge threshold is high, a
+				// chunk can contain long internal runs where pSource matches
+				// pDictionary.  Skip = 2 bytes regardless of length; concat
+				// literal = N bytes; fresh literal = 2+N; ref = 4.  Skip beats
+				// concat at N>=3 immediately, but skip ENDS the literal stream
+				// so the next emit pays an extra +2 (fresh opcode).  Net break-
+				// even with concat is N=4; we use N=5 for a small safety margin.
+				int matchRun = 0;
+				while (matchRun < sourceData.size &&
+				       sourceData.pData[matchRun] ==
+				       pDictionary[cursorPosition + matchRun])
+				{
+					++matchRun;
+				}
+				if (matchRun >= 5)
+				{
+					// Emit one or more cursor-skip opcodes, with bank-skip
+					// guarding (an EmitSkip emits ceil(matchRun/MAX_STRING_SIZE)
+					// 2-byte opcodes; reserve worst-case in advance).
+					int numSkips = (matchRun / MAX_STRING_SIZE) + 1;
+					space_left_in_bank = CheckEmitSourceSkip(2 * numSkips, pDest, space_left_in_bank);
+					pDest += EmitSkip(pDest, matchRun);
+					bLastEmitIsLiteral = false;
+
+					sourceData.pData += matchRun;
+					sourceData.size  -= matchRun;
+					cursorPosition += matchRun;
+					lastEmittedCursorPosition = cursorPosition;
+					continue;
+				}
+
 				candidateData = LongestMatch(sourceData, dictionaryData, cursorPosition);
 
 				// If no match, or the match is too small, then take the next byte
@@ -905,6 +962,32 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 					candidateData.pData = sourceData.pData;
 				}
 
+				// Lazy matching: if this match would emit a ref, peek one byte
+				// ahead.  If a strictly longer match starts at cursor+1, take a
+				// 1-byte literal here and let the next iteration emit the longer
+				// ref.  Cheap branch in an offline encoder; typical 5-10% win.
+				if (candidateData.size > 3 && sourceData.size > 1)
+				{
+					DataString peekSource;
+					peekSource.pData = sourceData.pData + 1;
+					peekSource.size  = sourceData.size  - 1;
+					DataString peek = LongestMatch(peekSource, dictionaryData, cursorPosition + 1);
+					if (peek.size > candidateData.size)
+					{
+						candidateData.size = 1;
+						candidateData.pData = sourceData.pData;
+					}
+				}
+
+				// Capture the source bytes before sourceData advances. Literal
+				// emission must read from pSource, not from candidateData.pData
+				// (which may point into pDictionary at a position AddDictionary
+				// is about to overwrite — this is what restricted the future-
+				// cursor search to cursorPosition+3 in the original encoder).
+				DataString litData;
+				litData.pData = sourceData.pData;
+				litData.size = candidateData.size;
+
 				// Adjust source stream
 				sourceData.pData += candidateData.size;
 				sourceData.size  -= candidateData.size;
@@ -913,7 +996,14 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				cursorPosition = AddDictionary(candidateData, cursorPosition);
 				lastEmittedCursorPosition = cursorPosition;
 
-				if (candidateData.size > 3)
+				// A 4-byte ref costs 4 output bytes; a 4-byte literal CONCATENATED
+				// onto a previous literal also costs 4. Emitting the ref ends the
+				// literal stream, so the next non-ref emission pays +2. Prefer
+				// concat over a tied-cost ref.
+				bool emitAsRef = (candidateData.size > 3) &&
+				                 !(bLastEmitIsLiteral && candidateData.size == 4);
+
+				if (emitAsRef)
 				{
 					space_left_in_bank = CheckEmitSourceSkip(4, pDest, space_left_in_bank);
 
@@ -924,36 +1014,39 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				}
 				else if (bLastEmitIsLiteral)
 				{
-					// This is a problem for the source bank skip, we can't
-					// concatenate if we end up injecting a source bank skip opcode
-					// into the stream...  what to do???, if insert, we will need to
-					// do a "normal" literal emission, ugly
+					// Two reasons we may have to fall back to a fresh literal:
+					//   (1) a source-bank-skip opcode would be injected mid-stream,
+					//   (2) concatenation would overflow the 15-bit length field.
+					bool concatOverflow =
+					    ExistingLiteralLength(pLastLiteralDest) + litData.size > MAX_STRING_SIZE;
 
-					int space = CheckEmitSourceSkip(candidateData.size, pDest, space_left_in_bank);
+					int space = CheckEmitSourceSkip(litData.size, pDest, space_left_in_bank);
 
-					if (space != (space_left_in_bank - candidateData.size))
+					if (concatOverflow || space != (space_left_in_bank - litData.size))
 					{
-						space_left_in_bank = space-2;
+						space_left_in_bank = (space != (space_left_in_bank - litData.size))
+						                     ? (space - 2)
+						                     : space;
 
 						// Emit a new literal
 						pLastLiteralDest = pDest;
-						pDest += EmitLiteral(pDest, candidateData);
+						pDest += EmitLiteral(pDest, litData);
 					}
 					else
 					{
 						// Concatenate this literal onto the previous literal
 						space_left_in_bank = space;
-						pDest += ConcatLiteral(pLastLiteralDest, candidateData);
+						pDest += ConcatLiteral(pLastLiteralDest, litData);
 					}
 				}
 				else
 				{
-					space_left_in_bank = CheckEmitSourceSkip(2 + candidateData.size, pDest, space_left_in_bank);
+					space_left_in_bank = CheckEmitSourceSkip(2 + litData.size, pDest, space_left_in_bank);
 
 					// Emit a new literal
 					pLastLiteralDest = pDest;
 					bLastEmitIsLiteral = true;
-					pDest += EmitLiteral(pDest, candidateData);
+					pDest += EmitLiteral(pDest, litData);
 				}
 			}
 		}

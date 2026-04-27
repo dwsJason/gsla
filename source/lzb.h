@@ -13,9 +13,14 @@ int Old_LZB_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSiz
 //
 // LZB Compressor that uses GSLA Opcodes while encoding
 //
+// gapMergeThreshold: runs of unchanged bytes shorter than this are absorbed
+// into the surrounding changed-chunk; runs of this length or longer split the
+// chunk and emit a 2-byte cursor-skip opcode.  The optimum is content-dependent
+// (denser change → smaller threshold).  Pass 3 for the original behavior.
+//
 int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  unsigned char* pDataStart, unsigned char* pDictionary,
-				  int dictionarySize);
+				  int dictionarySize, int gapMergeThreshold = 3);
 
 #endif // LZB_H
 
