@@ -14,7 +14,7 @@
 //------------------------------------------------------------------------------
 static void helpText()
 {
-	printf("GSLA - v1.01\n");
+	printf("GSLA - v1.03\n");
 	printf("--------------\n");
 	printf("GS Lzb Animation Creation Tool\n");
 	printf("Converts from C2 to GSLA\n");
