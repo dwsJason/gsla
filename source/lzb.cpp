@@ -140,6 +140,10 @@ static DataString HashChainLongestMatch(
 	if (sourceSize < MIN_MATCH) return result;
 	if (posLow >= posHighExcl)  return result;
 
+	// Match length is encoded in 14 bits + 1; matches longer than
+	// MAX_STRING_SIZE cannot be represented in a single ref opcode.
+	if (sourceSize > MAX_STRING_SIZE) sourceSize = MAX_STRING_SIZE;
+
 	unsigned int h = Hash4(source);
 	int pos = s_hashHead[h];
 	int chainCount = 0;
@@ -462,6 +466,11 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 		candidate.pData = data.pData;
 		candidate.size = 0;
 
+		// Match length is encoded in 14 bits + 1; matches longer than
+		// MAX_STRING_SIZE can't be represented in a single ref opcode.
+		int searchSize = data.size;
+		if (searchSize > MAX_STRING_SIZE) searchSize = MAX_STRING_SIZE;
+
 		// First Check for a pattern / run-length style match
 		// Check the end of the dictionary, to see if this data could be a
 		// pattern "run" (where we can repeat a pattern for X many times for free
@@ -471,13 +480,13 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary)
 			// Check for pattern sizes, start small
 			int max_pattern_size = 4096;
 			if (dictionary.size < max_pattern_size)  max_pattern_size = dictionary.size;
-			if (data.size < max_pattern_size) max_pattern_size = data.size;
+			if (searchSize < max_pattern_size) max_pattern_size = searchSize;
 
 			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
 			{
 				int pattern_start = dictionary.size - pattern_size;
 
-				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
+				for (int dataIndex = 0; dataIndex < searchSize; ++dataIndex)
 				{
 					if (data.pData[ dataIndex ] == dictionary.pData[ pattern_start + (dataIndex % pattern_size) ])
 					{
@@ -531,6 +540,11 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 		candidate.pData = data.pData;
 		candidate.size = 0;
 
+		// Match length is encoded in 14 bits + 1; matches longer than
+		// MAX_STRING_SIZE can't be represented in a single ref opcode.
+		int searchSize = data.size;
+		if (searchSize > MAX_STRING_SIZE) searchSize = MAX_STRING_SIZE;
+
 		// First Check for a pattern / run-length style match
 		// Check the end of the dictionary, to see if this data could be a
 		// pattern "run" (where we can repeat a pattern for X many times for free
@@ -540,13 +554,13 @@ DataString LongestMatch(const DataString& data, const DataString& dictionary, in
 			// Check for pattern sizes, start small
 			int max_pattern_size = 4096;
 			if (cursorPosition < max_pattern_size)  max_pattern_size = cursorPosition;
-			if (data.size < max_pattern_size) max_pattern_size = data.size;
+			if (searchSize < max_pattern_size) max_pattern_size = searchSize;
 
 			for (int pattern_size = 1; pattern_size <= max_pattern_size; ++pattern_size)
 			{
 				int pattern_start = cursorPosition - pattern_size;
 
-				for (int dataIndex = 0; dataIndex < data.size; ++dataIndex)
+				for (int dataIndex = 0; dataIndex < searchSize; ++dataIndex)
 				{
 					if (data.pData[ dataIndex ] == dictionary.pData[ pattern_start + (dataIndex % pattern_size) ])
 					{
