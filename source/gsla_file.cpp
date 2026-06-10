@@ -379,10 +379,10 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 
 	unsigned char* pInitialFrame = m_pC1PixelMaps[ 0 ];
 
-	// Bake-off: Old_LZB_Compress and LZB_Compress are different greedy strategies
-	// with different bias.  Run both on the INIT frame and keep the smaller.
-	int oldSize = Old_LZB_Compress(pAltBuffer,  pInitialFrame, m_frameSize);
-	int newSize = LZB_Compress    (pWorkBuffer, pInitialFrame, m_frameSize);
+	// Bake-off: the optimal parser should win, but the greedy strategies cost
+	// almost nothing on a single frame, so keep all three and take the smallest.
+	int oldSize = Old_LZB_Compress   (pAltBuffer,  pInitialFrame, m_frameSize);
+	int newSize = LZB_Compress       (pWorkBuffer, pInitialFrame, m_frameSize);
 	int compressedSize;
 	if (newSize <= oldSize)
 	{
@@ -397,7 +397,16 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 		pAltBuffer = tmp;
 	}
 
-	printf("frameSize = %d (old=%d new=%d)\n", compressedSize, oldSize, newSize);
+	int optSize = LZB_CompressOptimal(pAltBuffer, pInitialFrame, m_frameSize);
+	if (optSize < compressedSize)
+	{
+		compressedSize = optSize;
+		unsigned char* tmp = pWorkBuffer;
+		pWorkBuffer = pAltBuffer;
+		pAltBuffer = tmp;
+	}
+
+	printf("frameSize = %d (old=%d new=%d optimal=%d)\n", compressedSize, oldSize, newSize, optSize);
 
 	bytes.insert(bytes.end(), pWorkBuffer, pWorkBuffer + compressedSize);
 
@@ -430,10 +439,8 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	unsigned char *pCanvas = new unsigned char[ m_frameSize ];
 	memcpy(pCanvas, m_pC1PixelMaps[0], m_frameSize);
 
-	// gapMergeThreshold of 256 was empirically best on falcon-new.gsla
-	// (within 0.8% of the per-frame optimum across {3,16,64,128,256}).
-	// Lower values (3, 16, 64) cost double-digit-percent on real animations.
-	const int kGapMergeThreshold = 256;
+	// Optimal-parse encoder: skip-vs-merge and literal/ref boundaries come out
+	// of the DP, so no gap-merge threshold is needed anymore.
 
 	// Let's encode some frames buddy
 	for (unsigned int frameIndex = 1; frameIndex < m_pC1PixelMaps.size(); ++frameIndex)
@@ -443,9 +450,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 			printf("Save Frame %d\n", frameIndex + 1);
 		}
 
-		int frameSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[frameIndex], m_frameSize,
-		                              pWorkBuffer - bytes.size(),
-		                              pCanvas, m_frameSize, kGapMergeThreshold);
+		int frameSize = LZBA_CompressOptimal(pWorkBuffer, m_pC1PixelMaps[frameIndex], m_frameSize,
+		                                     pWorkBuffer - bytes.size(),
+		                                     pCanvas, m_frameSize);
 
 		if (bVerbose)
 		{
@@ -459,9 +466,9 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
 	// Add the RING Frame
 	printf("Save Ring Frame\n");
 
-	int ringSize = LZBA_Compress(pWorkBuffer, m_pC1PixelMaps[0], m_frameSize,
-	                             pWorkBuffer - bytes.size(),
-	                             pCanvas, m_frameSize, kGapMergeThreshold);
+	int ringSize = LZBA_CompressOptimal(pWorkBuffer, m_pC1PixelMaps[0], m_frameSize,
+	                                    pWorkBuffer - bytes.size(),
+	                                    pCanvas, m_frameSize);
 
 	printf("Ring Size %d\n", ringSize);
 

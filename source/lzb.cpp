@@ -1170,5 +1170,495 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 
 }
 
+//==============================================================================
+//
+// Phase 2: Optimal-parse encoder
+//
+// The greedy encoders above decide literal/ref/skip locally (with 1-byte lazy
+// matching and a fixed gap-merge threshold).  This encoder instead runs a
+// shortest-path dynamic program over the whole frame with the exact opcode
+// cost model, so every literal/ref/skip boundary is globally optimal.
+//
+// Why a DP is valid here: when the decode cursor sits at position i, the
+// canvas state is fully determined no matter which opcodes got it there —
+// positions < i hold new-frame bytes (everything emitted writes new data, and
+// skipped bytes were already equal), positions >= i still hold old-frame
+// bytes.  So the set of matches available at i is path-independent.
+//
+// Match semantics against that virtual canvas (player copies forward,
+// byte-by-byte, with overlap allowed):
+//   d < i : every read position either holds an already-emitted new byte, or
+//           is inside the copy's own dest range and was just written with a
+//           new byte (the overlapped pattern-run trick).  Either way the
+//           condition reduces to pSource[d+k] == pSource[i+k] — a plain
+//           self-match on the NEW frame.
+//   d > i : reads always run ahead of the writes, so every read sees the old
+//           canvas: condition is pDictionary[d+k] == pSource[i+k].
+//
+// Cost model (output bytes):
+//   ref               4, ends the literal stream
+//   skip              2 per <=16384, ends the literal stream, only over bytes
+//                     where new == old
+//   literal byte      1 while a literal opcode is open, +2 to open one
+//
+// States: (position, 0=no open literal, 1=literal open).  Refs and skips are
+// flat-cost over a contiguous range of landing positions, so they're relaxed
+// with a range-min segment tree (range update, point query) instead of one
+// edge per length.
+//
+//==============================================================================
+
+// Tuning (sizes/times on falcon-new.gsla, 256 frames):
+//   chain 1024 → 280,565 @ 4.0s;  2048 → 279,870 @ 6.3s;  4096 → 279,154 @ 11.5s
+//   margin 8 + landing hints sits within 0.3% of an unpruned DP (279,990 @ 313s)
+#define OPT_MAX_CHAIN        2048     // chain walk cap at queried positions
+#define OPT_RUN_QUERY_MARGIN 8        // query matches this close to a run end
+#define OPT_DEEP_RUN_CHAIN   0        // no match query deep inside unchanged runs
+#define OPT_SEG_LEAVES       65536    // power of two >= MAX_DICTIONARY_SIZE+1
+#define OPT_COST_INF         0x3FFFFFFF
+
+#define OPT_TYPE_LIT   0
+#define OPT_TYPE_SKIP  1
+#define OPT_TYPE_REF   2
+
+// Two independent hash chains (the greedy encoders' single chain tracks the
+// mutating canvas; the DP needs both views of it at every position).
+struct OptHashChain
+{
+	int head  [HASH_SIZE];
+	int next  [MAX_DICTIONARY_SIZE];
+	int prevDL[MAX_DICTIONARY_SIZE];
+	int bucket[MAX_DICTIONARY_SIZE];
+};
+
+static OptHashChain s_chainPre;   // new-frame self matches, positions < cursor
+static OptHashChain s_chainPost;  // old-frame matches, positions > cursor
+
+static void OptChainReset(OptHashChain& c)
+{
+	for (int i = 0; i < HASH_SIZE; ++i) c.head[i] = -1;
+	for (int i = 0; i < MAX_DICTIONARY_SIZE; ++i) c.bucket[i] = -1;
+}
+
+static inline void OptChainInsert(OptHashChain& c, int p, const unsigned char* base)
+{
+	int h = (int)Hash4(base + p);
+	int oldHead = c.head[h];
+	c.next  [p] = oldHead;
+	c.prevDL[p] = -1;
+	if (oldHead >= 0) c.prevDL[oldHead] = p;
+	c.head  [h] = p;
+	c.bucket[p] = h;
+}
+
+static inline void OptChainRemove(OptHashChain& c, int p)
+{
+	int b = c.bucket[p];
+	if (b < 0) return;
+	int prev = c.prevDL[p];
+	int next = c.next[p];
+	if (prev >= 0) c.next[prev] = next;
+	else           c.head[b]    = next;
+	if (next >= 0) c.prevDL[next] = prev;
+	c.bucket[p] = -1;
+}
+
+// Longest match for src[0..maxLen) among chain positions; reads from
+// base[pos..) bounded by readLimitExcl.  Returns length (>= MIN_MATCH) or 0.
+static int OptChainQuery(const OptHashChain& c, const unsigned char* src, int maxLen,
+                         const unsigned char* base, int readLimitExcl, int maxChain,
+                         int* pBestOff)
+{
+	if (maxLen < MIN_MATCH) return 0;
+
+	int pos = c.head[Hash4(src)];
+	int chainCount = 0;
+	int bestLen = MIN_MATCH - 1;   // require strictly better
+	int bestOff = -1;
+
+	while (pos >= 0 && chainCount < maxChain)
+	{
+		int maxExtend = readLimitExcl - pos;
+		if (maxExtend > maxLen) maxExtend = maxLen;
+
+		// Quick reject: can't beat current best, or best+1'th byte differs.
+		if (maxExtend > bestLen && base[pos + bestLen] == src[bestLen])
+		{
+			const unsigned char* p = base + pos;
+			int len = 0;
+			while (len < maxExtend && p[len] == src[len]) ++len;
+			if (len > bestLen)
+			{
+				bestLen = len;
+				bestOff = pos;
+				if (len == maxLen) break;   // can't do better
+			}
+		}
+		pos = c.next[pos];
+		++chainCount;
+	}
+
+	if (bestOff < 0) return 0;
+	*pBestOff = bestOff;
+	return bestLen;
+}
+
+//------------------------------------------------------------------------------
+// Range-min segment tree over landing positions, values packed as
+// (cost << 18) | (fromPos << 2) | opType so min-by-cost carries provenance.
+// fromPos < 32768 (15 bits), cost < ~100K (17 bits) — fits in 35 bits.
+
+static long long s_seg[2 * OPT_SEG_LEAVES];
+
+static inline long long OptPack(int cost, int from, int type)
+{
+	return ((long long)cost << 18) | ((long long)from << 2) | (long long)type;
+}
+
+static void SegUpdate(int l, int r, long long v)   // inclusive [l, r]
+{
+	if (l > r) return;
+	l += OPT_SEG_LEAVES;
+	r += OPT_SEG_LEAVES + 1;
+	while (l < r)
+	{
+		if (l & 1) { if (v < s_seg[l]) s_seg[l] = v; ++l; }
+		if (r & 1) { --r; if (v < s_seg[r]) s_seg[r] = v; }
+		l >>= 1;
+		r >>= 1;
+	}
+}
+
+static long long SegQuery(int j)
+{
+	long long v = OptPack(OPT_COST_INF, 0, 0);
+	for (int p = j + OPT_SEG_LEAVES; p >= 1; p >>= 1)
+	{
+		if (s_seg[p] < v) v = s_seg[p];
+	}
+	return v;
+}
+
+//------------------------------------------------------------------------------
+// DP state, parse provenance, and the reconstructed op list.
+
+static int           s_cost0 [MAX_DICTIONARY_SIZE + 1]; // best cost arriving with no open literal
+static int           s_cost1 [MAX_DICTIONARY_SIZE + 1]; // best cost arriving with open literal
+static long long     s_par0  [MAX_DICTIONARY_SIZE + 1]; // packed (cost,from,type) for state 0
+static unsigned char s_par1  [MAX_DICTIONARY_SIZE + 1]; // prior state for the literal byte
+static int           s_preOff [MAX_DICTIONARY_SIZE];
+static int           s_preLen [MAX_DICTIONARY_SIZE];
+static int           s_postOff[MAX_DICTIONARY_SIZE];
+static int           s_postLen[MAX_DICTIONARY_SIZE];
+static int           s_runEnd [MAX_DICTIONARY_SIZE + 1];
+static unsigned char s_queryHint[MAX_DICTIONARY_SIZE + 1];
+
+struct OptOp
+{
+	int type;   // OPT_TYPE_LIT / SKIP / REF
+	int pos;    // source/cursor position the op starts at
+	int len;
+	int off;    // dictionary offset (refs only)
+};
+static OptOp s_ops[MAX_DICTIONARY_SIZE + 2];
+
+//------------------------------------------------------------------------------
+//
+// bDelta = true : delta frame (canvas dictionary, skips allowed, bank-skip
+//                 guarded output, trailing End-of-Frame, canvas updated)
+// bDelta = false: INIT frame (dictionary grows from empty in pSource itself,
+//                 no skips — every byte must be written — no bank logic,
+//                 caller appends the end-of-animation opcode)
+//
+static int OptimalCompressCore(unsigned char* pDest, unsigned char* pSource, int frameSize,
+                               unsigned char* pDataStart, unsigned char* pDictionary, bool bDelta)
+{
+	unsigned char* pOriginalDest = pDest;
+
+	//---- per-frame reset -----------------------------------------------------
+
+	OptChainReset(s_chainPre);
+	if (bDelta)
+	{
+		OptChainReset(s_chainPost);
+		for (int p = 0; p + MIN_MATCH <= frameSize; ++p)
+		{
+			OptChainInsert(s_chainPost, p, pDictionary);
+		}
+
+		s_runEnd[frameSize] = frameSize;
+		for (int i = frameSize - 1; i >= 0; --i)
+		{
+			s_runEnd[i] = (pSource[i] == pDictionary[i]) ? s_runEnd[i + 1] : i;
+		}
+	}
+
+	memset(s_queryHint, 0, frameSize + 1);
+
+	const long long INFPACK = OptPack(OPT_COST_INF, 0, 0);
+	for (int i = 0; i < 2 * OPT_SEG_LEAVES; ++i) s_seg[i] = INFPACK;
+
+	for (int i = 0; i <= frameSize; ++i) s_cost1[i] = OPT_COST_INF;
+
+	// If the unchanged tail of the frame reaches the end, the parse can stop
+	// there (no trailing skip needed) — track the best such finish.
+	int finBest = OPT_COST_INF;
+	int finPos  = -1;
+
+	//---- forward DP ------------------------------------------------------------
+
+	for (int i = 0; i <= frameSize; ++i)
+	{
+		long long q = SegQuery(i);
+		int c0 = (0 == i) ? 0 : (int)(q >> 18);
+		s_cost0[i] = c0;
+		s_par0[i]  = q;
+
+		int c1 = s_cost1[i];
+
+		if (i == frameSize) break;
+
+		// Position i is no longer "ahead of the cursor" for later positions.
+		if (bDelta) OptChainRemove(s_chainPost, i);
+
+		int best = (c0 < c1) ? c0 : c1;
+
+		// Skip: flat 2 bytes to land anywhere inside the unchanged run.
+		if (bDelta && (pSource[i] == pDictionary[i]))
+		{
+			int E = s_runEnd[i];
+			if (E == frameSize && best < finBest)
+			{
+				finBest = best;
+				finPos  = i;
+			}
+			int hi = i + MAX_STRING_SIZE;
+			if (hi > E) hi = E;
+			SegUpdate(i + 1, hi, OptPack(best + 2, i, OPT_TYPE_SKIP));
+		}
+
+		// Ref: flat 4 bytes to land anywhere in [i+3, i+L] (length-3 prefixes
+		// of a >=4 match are still valid refs and beat a fresh literal).
+		int maxLen = frameSize - i;
+		if (maxLen > MAX_STRING_SIZE) maxLen = MAX_STRING_SIZE;
+
+		// Speed: deep inside an unchanged run, a ref start is rarely part of
+		// the optimal parse — a fresh skip+ref from the run boundary usually
+		// costs the same (suffix property lets a bridging match start later).
+		// The exception is a previous ref LANDING deep in the run and chaining
+		// straight into another ref; ref edges mark their max-length landing
+		// in s_queryHint to keep exactly that case covered.  Unpruned, match
+		// queries at the ~90% unchanged positions were ~99% of encode time.
+		int maxChain = OPT_MAX_CHAIN;
+		if (bDelta && !s_queryHint[i] && (pSource[i] == pDictionary[i]) &&
+		    (s_runEnd[i] - i) > OPT_RUN_QUERY_MARGIN)
+		{
+			maxChain = OPT_DEEP_RUN_CHAIN;
+		}
+
+		int Lp = 0, Lq = 0, pOff = -1, qOff = -1;
+		if (maxChain > 0 && maxLen >= MIN_MATCH)
+		{
+			Lp = OptChainQuery(s_chainPre, pSource + i, maxLen, pSource, frameSize,
+			                   maxChain, &pOff);
+			if (bDelta && Lp < maxLen)
+			{
+				Lq = OptChainQuery(s_chainPost, pSource + i, maxLen, pDictionary, frameSize,
+				                   maxChain, &qOff);
+			}
+		}
+		s_preLen [i] = Lp; s_preOff [i] = pOff;
+		s_postLen[i] = Lq; s_postOff[i] = qOff;
+
+		int L = (Lp > Lq) ? Lp : Lq;
+		if (L >= MIN_MATCH)
+		{
+			SegUpdate(i + (MIN_MATCH - 1), i + L, OptPack(best + 4, i, OPT_TYPE_REF));
+
+			// A follow-on ref plausibly starts where this one lands.
+			if (Lp >= MIN_MATCH) s_queryHint[i + Lp] = 1;
+			if (Lq >= MIN_MATCH) s_queryHint[i + Lq] = 1;
+		}
+
+		// Literal byte: continue the open literal, or open a fresh one.
+		{
+			int viaCont  = c1 + 1;
+			int viaFresh = c0 + 3;
+			int nl;
+			unsigned char par;
+			if (viaCont <= viaFresh) { nl = viaCont;  par = 1; }
+			else                     { nl = viaFresh; par = 0; }
+			if (nl < s_cost1[i + 1])
+			{
+				s_cost1[i + 1] = nl;
+				s_par1 [i + 1] = par;
+			}
+		}
+
+		// Position i now holds a new-frame byte for everything after it.
+		if (i + MIN_MATCH <= frameSize) OptChainInsert(s_chainPre, i, pSource);
+	}
+
+	//---- pick the end point ----------------------------------------------------
+
+	int endPos   = frameSize;
+	int endState = 0;
+	int bestEnd  = s_cost0[frameSize];
+	if (s_cost1[frameSize] < bestEnd)
+	{
+		bestEnd  = s_cost1[frameSize];
+		endState = 1;
+	}
+	if (bDelta && finBest < bestEnd)
+	{
+		bestEnd  = finBest;
+		endPos   = finPos;
+		endState = (s_cost1[finPos] < s_cost0[finPos]) ? 1 : 0;
+	}
+
+	//---- backward reconstruction -----------------------------------------------
+
+	int nOps = 0;
+	int pos  = endPos;
+	int st   = endState;
+	while (pos > 0)
+	{
+		if (1 == st)
+		{
+			// Walk back through consecutive literal bytes, merge into one op.
+			int end = pos;
+			while (pos > 0 && 1 == st)
+			{
+				st = s_par1[pos];
+				--pos;
+			}
+			s_ops[nOps].type = OPT_TYPE_LIT;
+			s_ops[nOps].pos  = pos;
+			s_ops[nOps].len  = end - pos;
+			s_ops[nOps].off  = 0;
+			++nOps;
+		}
+		else
+		{
+			long long q = s_par0[pos];
+			int from = (int)((q >> 2) & 0xFFFF);
+			int type = (int)(q & 3);
+			int len  = pos - from;
+
+			s_ops[nOps].type = type;
+			s_ops[nOps].pos  = from;
+			s_ops[nOps].len  = len;
+			s_ops[nOps].off  = (OPT_TYPE_REF == type)
+			                   ? ((len <= s_preLen[from]) ? s_preOff[from] : s_postOff[from])
+			                   : 0;
+			++nOps;
+
+			pos = from;
+			st  = (s_cost1[pos] < s_cost0[pos]) ? 1 : 0;
+		}
+	}
+
+	//---- forward emission (ops are stored in reverse) ---------------------------
+
+	int space_left_in_bank = 0;
+	if (bDelta)
+	{
+		space_left_in_bank = (int)0x10000 - (int)((pDest - pDataStart) & 0xFFFF);
+		space_left_in_bank = CheckEmitSourceSkip(0, pDest, space_left_in_bank);
+	}
+
+	for (int opIdx = nOps - 1; opIdx >= 0; --opIdx)
+	{
+		const OptOp& op = s_ops[opIdx];
+
+		switch (op.type)
+		{
+		case OPT_TYPE_SKIP:
+		{
+			int numSkips = (op.len / MAX_STRING_SIZE) + 1;
+			space_left_in_bank = CheckEmitSourceSkip(2 * numSkips, pDest, space_left_in_bank);
+			pDest += EmitSkip(pDest, op.len);
+			break;
+		}
+		case OPT_TYPE_REF:
+		{
+			if (bDelta)
+			{
+				space_left_in_bank = CheckEmitSourceSkip(4, pDest, space_left_in_bank);
+			}
+			assert(op.len >= 1 && op.len <= MAX_STRING_SIZE);
+			unsigned short opcode = (unsigned short)(((op.len - 1) << 1) | 0x8000);
+			*pDest++ = (unsigned char)(opcode & 0xFF);
+			*pDest++ = (unsigned char)((opcode >> 8) & 0xFF);
+			unsigned short address = (unsigned short)(op.off + 0x2000);
+			*pDest++ = (unsigned char)(address & 0xFF);
+			*pDest++ = (unsigned char)((address >> 8) & 0xFF);
+			break;
+		}
+		default: // OPT_TYPE_LIT
+		{
+			// Literal data must come from pSource (new-frame bytes).  Split
+			// runs longer than the 14-bit length field into fresh opcodes.
+			int n = op.len;
+			int p = op.pos;
+			while (n > 0)
+			{
+				int chunk = (n > MAX_STRING_SIZE) ? MAX_STRING_SIZE : n;
+				if (bDelta)
+				{
+					space_left_in_bank = CheckEmitSourceSkip(2 + chunk, pDest, space_left_in_bank);
+				}
+				unsigned short opcode = (unsigned short)(((chunk - 1) << 1) | 0x0001);
+				*pDest++ = (unsigned char)(opcode & 0xFF);
+				*pDest++ = (unsigned char)((opcode >> 8) & 0xFF);
+				memcpy(pDest, pSource + p, chunk);
+				pDest += chunk;
+				p += chunk;
+				n -= chunk;
+			}
+			break;
+		}
+		}
+	}
+
+	if (bDelta)
+	{
+		space_left_in_bank = CheckEmitSourceSkip(2, pDest, space_left_in_bank);
+
+		// End of Frame opcode
+		*pDest++ = 0x02;
+		*pDest++ = 0x00;
+
+		// The ops transform the canvas into the new frame; just say so.
+		memcpy(pDictionary, pSource, frameSize);
+	}
+
+	return (int)(pDest - pOriginalDest);
+}
+
+//------------------------------------------------------------------------------
+
+int LZB_CompressOptimal(unsigned char* pDest, unsigned char* pSource, int sourceSize)
+{
+	if (sourceSize > MAX_DICTIONARY_SIZE)
+	{
+		return LZB_Compress(pDest, pSource, sourceSize);
+	}
+	return OptimalCompressCore(pDest, pSource, sourceSize, nullptr, nullptr, false);
+}
+
+//------------------------------------------------------------------------------
+
+int LZBA_CompressOptimal(unsigned char* pDest, unsigned char* pSource, int sourceSize,
+                         unsigned char* pDataStart, unsigned char* pDictionary, int dictionarySize)
+{
+	if ((sourceSize != dictionarySize) || (sourceSize > MAX_DICTIONARY_SIZE))
+	{
+		return LZBA_Compress(pDest, pSource, sourceSize, pDataStart, pDictionary,
+		                     dictionarySize, 256);
+	}
+	return OptimalCompressCore(pDest, pSource, sourceSize, pDataStart, pDictionary, true);
+}
+
 //------------------------------------------------------------------------------
 

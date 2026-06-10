@@ -22,5 +22,14 @@ int LZBA_Compress(unsigned char* pDest, unsigned char* pSource, int sourceSize,
 				  unsigned char* pDataStart, unsigned char* pDictionary,
 				  int dictionarySize, int gapMergeThreshold = 3);
 
+//
+// Optimal-parse variants (Phase 2): same output format, globally minimal
+// literal/ref/skip parse via dynamic programming.
+//
+int LZB_CompressOptimal(unsigned char* pDest, unsigned char* pSource, int sourceSize);
+int LZBA_CompressOptimal(unsigned char* pDest, unsigned char* pSource, int sourceSize,
+						 unsigned char* pDataStart, unsigned char* pDictionary,
+						 int dictionarySize);
+
 #endif // LZB_H
 
