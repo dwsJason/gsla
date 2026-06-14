@@ -130,6 +130,8 @@
 #include "lzb.h"
 
 #include <stdio.h>
+#include <cstring>	// memcpy
+#include <cerrno>	// errno
 
 // If these structs are the wrong size, there's an issue with type sizes, and
 // your compiler
@@ -193,7 +195,7 @@ void GSLAFile::LoadFromFile(const char* pFilePath)
     errno_t err = fopen_s(&pFile, pFilePath, "rb");
 #else
     pFile = fopen(pFilePath, "rb");
-    errno_t err = (pFile == nullptr) ? errno : 0;
+    int err = (pFile == nullptr) ? errno : 0;	// errno_t is Windows-only (Annex K)
 #endif
 
 	if (0==err)
@@ -501,7 +503,7 @@ void GSLAFile::SaveToFile(const char* pFilenamePath, bool bVerbose)
     errno_t err = fopen_s(&pFile, pFilenamePath, "wb");
 #else
     pFile = fopen(pFilenamePath, "wb");
-    errno_t err = (pFile == nullptr) ? errno : 0;
+    int err = (pFile == nullptr) ? errno : 0;	// errno_t is Windows-only (Annex K)
 #endif
 
 	if (0==err)

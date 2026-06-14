@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <cstring>	// memcpy, memcmp
+#include <cctype>	// tolower
 
 #include "c2_file.h"
 #include "gsla_file.h"

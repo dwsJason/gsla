@@ -16,6 +16,8 @@
 //
 #include "c2_file.h"
 #include <stdio.h>
+#include <cstring>	// memcpy
+#include <cerrno>	// errno
 
 // If these structs are the wrong size, there's an issue with type sizes, and
 // your compiler
@@ -65,7 +67,7 @@ void C2File::LoadFromFile(const char* pFilePath)
     errno_t err = fopen_s(&pFile, pFilePath, "rb");
 #else
     pFile = fopen(pFilePath, "rb");
-    errno_t err = (pFile == nullptr) ? errno : 0;
+    int err = (pFile == nullptr) ? errno : 0;	// errno_t is Windows-only (Annex K)
 #endif
 
 	if (0==err)
@@ -122,8 +124,13 @@ void C2File::LoadFromFile(const char* pFilePath)
 			data  = (unsigned short)bytes[ file_offset++ ];
 			data |= ((unsigned short)bytes[ file_offset++ ])<<8;
 
-			//if (((offset == 0)&&(data == 0xFFFF))||(offset < prev_offset))
-			if (0 == offset)
+			// End of Frame is specifically the marker 00 00 FF FF (offset 0,
+			// data 0xFFFF).  Testing offset==0 alone misreads any legitimate
+			// pixel write to canvas word 0 (offset 0, data != 0xFFFF) as a frame
+			// boundary, injecting content-dependent phantom frames -- which makes
+			// equal-length animations decode to different frame counts and
+			// desync the interleaved player.
+			if ((0 == offset) && (0xFFFF == data))
 			{
 				// End of Frame, capture a copy
 				pFrame  = new unsigned char[ 0x8000 ];
