@@ -7,21 +7,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <vector>
 #include <cstring>	// memcpy, memcmp
 #include <cctype>	// tolower
+#include <sys/stat.h>	// stat / _stat
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+#include "c1_file.h"
 #include "c2_file.h"
 #include "gsla_file.h"
 
 //------------------------------------------------------------------------------
 static void helpText()
 {
-	printf("GSLA - v1.05\n");
+	printf("GSLA - v1.06\n");
 	printf("--------------\n");
 	printf("GS Lzb Animation Creation Tool\n");
 	printf("Converts from C2 to GSLA\n");
 	printf("\n");
-	printf("gsla [options] <input_file> <outfile>\n");
+	printf("gsla [options] <input> <outfile>\n");
+	printf("<input> may be a .c2 file, a .gsla file, or a directory\n");
+	printf("        of loose .c1 images (one C1 frame per file).\n");
 	printf("-f<fps>    | Set the intended fps [*60,30,20,15,12,10,6,5,1]\n");
 	printf("-v         | Verbose\n");
 	printf("* indicates default setting\n");
@@ -56,6 +65,88 @@ static bool endsWith(const std::string& S, const std::string& SUFFIX)
     bResult = s.rfind(suffix) == (s.size()-suffix.size());
 
 	return bResult;
+}
+
+// Is the given path a directory?
+static bool isDirectory(const char* pPath)
+{
+#ifdef _WIN32
+	DWORD attribs = GetFileAttributesA(pPath);
+	if (INVALID_FILE_ATTRIBUTES == attribs)
+		return false;
+	return 0 != (attribs & FILE_ATTRIBUTE_DIRECTORY);
+#else
+	struct stat st;
+	if (0 != stat(pPath, &st))
+		return false;
+	return S_ISDIR(st.st_mode);
+#endif
+}
+
+// Encode an array of C1 frames into a GSLA file, then reload and verify the
+// round-trip frame-by-frame.  Shared by the .c2 and directory input paths.
+// Returns true on success.
+static bool encodeFramesToGsla(const std::vector<unsigned char*>& c1DataOriginal,
+							   const char* pOutfilePath, int encodingFps, bool bVerbose)
+{
+	int frameCountMultiplier = 60 / encodingFps;
+
+	std::vector<unsigned char*> c1Datas;
+
+	if (frameCountMultiplier > 1)
+	{
+		printf("Encoding Speed %dFPS / FrameCount Multiplier = %d\n", encodingFps, frameCountMultiplier);
+		printf("%d frames becomes %d frames\n",
+			   (int)c1DataOriginal.size(), (int)c1DataOriginal.size() * frameCountMultiplier);
+	}
+
+	// quick copy the c1Data, add extra frames to compensate for requested framerate
+	for (unsigned int frameIndex = 0; frameIndex < c1DataOriginal.size(); ++frameIndex)
+	{
+		for (int multiplier = 0; multiplier < frameCountMultiplier; ++multiplier)
+		{
+			c1Datas.push_back(c1DataOriginal[frameIndex]);
+		}
+	}
+
+	printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
+
+	GSLAFile anim(320, 200, 0x8000);
+
+	anim.AddImages(c1Datas);
+
+	anim.SaveToFile(pOutfilePath, bVerbose);
+
+	bool bSuccess = true;
+	{
+		// Verify the conversion is good
+		// Load the file back in
+		GSLAFile verify(pOutfilePath);
+
+		const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
+
+		for (unsigned int idx = 0; idx < frames.size(); ++idx)
+		{
+			int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
+			if (bVerbose)
+			{
+				printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
+			}
+			else if (result)
+			{
+				printf("Verify Frame %d - Failed\n", idx);
+			}
+
+			if (result)
+			{
+				bSuccess = false;
+			}
+		}
+	}
+
+	printf("%s\n", bSuccess ? "Success" : "Failed");
+
+	return bSuccess;
 }
 //------------------------------------------------------------------------------
 
@@ -211,66 +302,32 @@ int main(int argc, char* argv[])
 
 			if (pOutfilePath)
 			{
-				int frameCountMultiplier = 60 / encodingFps;
+				encodeFramesToGsla(c2data.GetPixelMaps(), pOutfilePath, encodingFps, bVerbose);
+			}
+		}
+		else if (isDirectory(pInfilePath))
+		{
+			// It's a directory of loose files; for now we assume it's full of
+			// C1 images and gather them into an array of C1 frame data.
 
-				if (encodingFps)
-				{
-					const std::vector<unsigned char*>& c1DataOriginal = c2data.GetPixelMaps();
-					std::vector<unsigned char*> c1Datas;
+			printf("Loading C1 files from directory %s\n", pInfilePath);
 
-					if (frameCountMultiplier > 1)
-					{
-						printf("Encoding Speed %dFPS / FrameCount Multiplier = %d\n", encodingFps, frameCountMultiplier);
-						printf("C2 with %d frames becomes %d frames\n", c2data.GetFrameCount(), c2data.GetFrameCount() * frameCountMultiplier);
-					}
+			C1File c1data( pInfilePath );
 
-					// quick copy the c1Data, add extra frames to compensate for requested framerate
-					for (unsigned int frameIndex = 0; frameIndex < c1DataOriginal.size(); ++frameIndex)
-					{
-						for (int multiplier = 0; multiplier < frameCountMultiplier; ++multiplier)
-						{
-							c1Datas.push_back(c1DataOriginal[frameIndex]);
-						}
-					}
+			int frameCount = c1data.GetFrameCount();
 
+			if (frameCount < 1)
+			{
+				// No usable C1 frames found in the directory
+				printf("No C1 images found in directory.\n");
+				helpText();
+			}
 
-					printf("Saving %s with %d frames\n", pOutfilePath, (int)c1Datas.size());
+			printf("Found %d C1 frame(s)\n", frameCount);
 
-					GSLAFile anim(320,200, 0x8000);
-
-					anim.AddImages(c1Datas);
-
-					anim.SaveToFile(pOutfilePath, bVerbose);
-
-					bool bSuccess = true;
-					{
-						// Verify the conversion is good
-						// Load the file back in
-						GSLAFile verify(pOutfilePath);
-
-						const std::vector<unsigned char *> &frames = verify.GetPixelMaps();
-
-						for (unsigned int idx = 0; idx < frames.size(); ++idx)
-						{
-							int result = memcmp(c1Datas[idx % c1Datas.size()], frames[idx], verify.GetFrameSize());
-							if (bVerbose)
-							{
-								printf("Verify Frame %d - %s\n", idx, result ? "Failed" : "Good");
-							}
-							else if (result)
-							{
-								printf("Verify Frame %d - Failed\n", idx);
-							}
-
-							if (result)
-							{
-								bSuccess = false;
-							}
-						}
-					}
-
-					printf("%s\n", bSuccess ? "Success" : "Failed");
-				}
+			if (pOutfilePath)
+			{
+				encodeFramesToGsla(c1data.GetPixelMaps(), pOutfilePath, encodingFps, bVerbose);
 			}
 		}
 

@@ -7,7 +7,7 @@ CXXFLAGS = -Wall -Wextra -I./source
 LDFLAGS =
 
 # Source and object files
-SRC = ./source/c2_file.cpp ./source/gsla_file.cpp ./source/lzb.cpp ./source/main.cpp
+SRC = ./source/c1_file.cpp ./source/c2_file.cpp ./source/gsla_file.cpp ./source/lzb.cpp ./source/main.cpp
 OBJ = $(SRC:.cpp=.o)
 TARGET = gsla
 
